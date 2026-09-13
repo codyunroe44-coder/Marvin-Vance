@@ -17,7 +17,14 @@ async def on_ready():
 @bot.command(name="ping")
 async def ping(ctx):
     await ctx.send("Pong! I'm alive and listening.")
-@bot.event
+@bot.command(name="ask")
+async def ask(ctx, *, prompt: str):
+    # Generate response from Gemini using a prefix command
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    await ctx.send(response.text)@bot.event
 async def on_message(message):
     # Ignore messages from the bot itself or other bots to prevent loops
     if message.author.bot:
