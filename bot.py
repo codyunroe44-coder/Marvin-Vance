@@ -94,7 +94,7 @@ class MarvinBot(discord.Client):
     def get_chat(self, channel_id):
         if channel_id not in self.chats:
             self.chats[channel_id] = ai_client.chats.create(
-                model="gemini-2.5-flash",
+                model="gemini-3.6-flash",
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION
                 )
