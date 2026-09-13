@@ -17,17 +17,14 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    # Ignore messages from the bot itself to prevent infinite loops
     if message.author.bot:
         return
 
-    # Ignore prefix commands (like !ping) so they don't trigger AI responses twice
     if message.content.startswith("!"):
         await bot.process_commands(message)
         return
 
     try:
-        # Send every chat message directly to Gemini
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=message.content
@@ -36,8 +33,6 @@ async def on_message(message):
     except Exception as e:
         print(f"Error generating content: {e}")
 
-    # Process any other standard commands
     await bot.process_commands(message)
 
-# Run the bot using your Discord token
 bot.run(os.getenv("DISCORD_TOKEN"))
