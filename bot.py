@@ -23,9 +23,9 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Check if the bot is mentioned or process commands
-    if bot.user.mentioned_in(message):
-        user_prompt = message.content.replace(f"<@!{bot.user.id}>", "").replace(f"<@{bot.user.id}>", "").strip()
+    # Check if the bot is mentioned or if its user ID is in the text
+    if bot.user.mentioned_in(message) or str(bot.user.id) in message.content:
+        user_prompt = message.content.replace(f"<@!{bot.user.id}>", "").replace(f"<@{bot.user.id}>", "").replace(f"@{bot.user.name}", "").strip()
         
         if user_prompt:
             # Generate response from Gemini
@@ -35,6 +35,7 @@ async def on_message(message):
             )
             await message.channel.send(response.text)
 
+    await bot.process_commands(message)
     await bot.process_commands(message)
 
 # Run the bot using your Discord token
