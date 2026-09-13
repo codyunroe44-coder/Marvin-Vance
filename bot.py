@@ -21,8 +21,9 @@ async def ping(ctx):
 async def ask(ctx, *, prompt: str):
     # Generate response from Gemini using a prefix command
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt
+    model="gemini-3.6-flash",
+    contents=prompt
+)
     )
     await ctx.send(response.text)@bot.event
 async def on_message(message):
