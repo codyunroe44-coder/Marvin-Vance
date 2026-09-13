@@ -127,7 +127,7 @@ class MarvinBot(discord.Client):
         async with message.channel.typing():
             try:
                 chat = self.get_chat(message.channel.id)
-                response = await chat.send_message(clean_message)
+                response =  chat.send_message(clean_message)
 
                 reply_text = response.text or "Uh... my brain just went blank."
 
