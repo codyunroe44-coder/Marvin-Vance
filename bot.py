@@ -27,8 +27,7 @@ async def on_message(message):
     try:
         response = client.models.generate_content(
             model="gemini-2.0-flash",
-            contents=message.content
-        )
+            contents=message.content)
         await message.channel.send(response.text)
     except Exception as e:
         print(f"Error generating content: {e}")
