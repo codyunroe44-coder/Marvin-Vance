@@ -13,37 +13,30 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} - Running clean and smooth!")
-@bot.command(name="ping")
-async def ping(ctx):
-    await ctx.send("Pong! I'm alive and listening.")
-@bot.command(name="ask")
-async def ask(ctx, *, prompt: str):
-    # Generate response from Gemini using a prefix command
-    response = client.models.generate_content(
-    model="gemini-3.6-flash",
-    contents=prompt
-)
-    )
-    await ctx.send(response.text)@bot.event
+    print(f"Logged in as {bot.user} - Chat mode active!")
+
+@bot.event
 async def on_message(message):
-    # Ignore messages from the bot itself or other bots to prevent loops
+    # Ignore messages from the bot itself to prevent infinite loops
     if message.author.bot:
         return
 
-    # Check if the bot is mentioned or if its user ID is in the text
-    if bot.user.mentioned_in(message) or str(bot.user.id) in message.content:
-        user_prompt = message.content.replace(f"<@!{bot.user.id}>", "").replace(f"<@{bot.user.id}>", "").replace(f"@{bot.user.name}", "").strip()
-        
-        if user_prompt:
-            # Generate response from Gemini
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=user_prompt
-            )
-            await message.channel.send(response.text)
+    # Ignore prefix commands (like !ping) so they don't trigger AI responses twice
+    if message.content.startswith("!"):
+        await bot.process_commands(message)
+        return
 
-    await bot.process_commands(message)
+    try:
+        # Send every chat message directly to Gemini
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=message.content
+        )
+        await message.channel.send(response.text)
+    except Exception as e:
+        print(f"Error generating content: {e}")
+
+    # Process any other standard commands
     await bot.process_commands(message)
 
 # Run the bot using your Discord token
