@@ -14,7 +14,9 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} - Running clean and smooth!")
-
+@bot.command(name="ping")
+async def ping(ctx):
+    await ctx.send("Pong! I'm alive and listening.")
 @bot.event
 async def on_message(message):
     # Ignore messages from the bot itself or other bots to prevent loops
