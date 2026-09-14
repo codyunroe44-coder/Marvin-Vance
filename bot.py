@@ -15,7 +15,7 @@ from google.genai import types
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
  
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.6-flash"
  
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
  
