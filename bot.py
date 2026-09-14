@@ -126,7 +126,7 @@ from conversation to conversation.
  
  
 # ==========================================================
-# CONVERSATION SETTINGS (Updated Limits & Windows)
+# CONVERSATION SETTINGS
 # ==========================================================
  
 MAX_ACTIVE_REPLIES = 25
