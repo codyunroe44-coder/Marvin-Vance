@@ -262,7 +262,7 @@ class MarvinBot(discord.Client):
 
         # Unique, owner-only commands for the shared testing room
         if is_shared_channel:
-            is_owner = message.author.name == "codyunroe44"
+            is_owner = message.author.name == "mrmeowman24_27959"
 
             if clean_message.lower() == "!marvin_engage":
                 if is_owner:
