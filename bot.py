@@ -286,7 +286,7 @@ class MarvinBot(discord.Client):
                     await message.reply("Nice try, but only Fire Phoenix or Kandric can engage my circuits here! 🤖", mention_author=False)
                     return
 
-            elif cmd == "!continue_marvin":
+            elif cmd == "!marvin_continue":
                 if is_owner:
                     self.start_active_session(message.channel.id)
                     await message.reply("Session extended! Keeping the circuit alive. ⚡", mention_author=False)
@@ -303,6 +303,10 @@ class MarvinBot(discord.Client):
                 else:
                     await message.reply("Error: You don't have clearance to lock down my system! 🚫", mention_author=False)
                     return
+
+            # In the shared channel, if there is no active session, ignore all other chatter completely
+            if not self.has_active_session(message.channel.id):
+                return
 
         context_text = clean_message
  
@@ -330,9 +334,10 @@ class MarvinBot(discord.Client):
         explicit_wake = is_mentioned or is_reply
  
         if is_shared_channel:
-            if (is_zephyr or is_owner) and self.has_active_session(message.channel.id):
-                if is_zephyr or explicit_wake:
-                    explicit_wake = True
+            if is_owner and not explicit_wake:
+                return
+            if is_zephyr:
+                explicit_wake = True
 
         if not is_dm and explicit_wake and not is_shared_channel:
             self.start_active_session(message.channel.id)
@@ -343,9 +348,6 @@ class MarvinBot(discord.Client):
             and self.has_active_session(message.channel.id)
         )
  
-        if is_shared_channel and is_owner and not explicit_wake:
-            return
-
         if not is_dm and not explicit_wake and not active_followup:
             return
  
@@ -361,9 +363,6 @@ class MarvinBot(discord.Client):
         )
  
         prompt = f"""
-SYSTEM INSTRUCTION:
-{SYSTEM_INSTRUCTION}
- 
 RECENT CHANNEL CONTEXT:
 {recent_context}
  
@@ -379,7 +378,10 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
                     response = await asyncio.to_thread(
                         ai_client.models.generate_content,
                         model=MODEL_NAME,
-                        contents=prompt
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_INSTRUCTION
+                        )
                     )
                 else:
                     chat = self.get_chat(message.channel.id, message.author.id)
