@@ -271,13 +271,14 @@ class MarvinBot(discord.Client):
                 else:
                     await message.reply("Nice try, but only Fire Phoenix or Kandric can engage my circuits here! 🤖", mention_author=False)
                     return
-
-            elif clean_message.lower() == "!marvin_lockdown":
+elif clean_message.lower() == "!marvin_lockdown":
                 if is_owner:
-                    key = (message.channel.id, message.author.id)
-                    self.active_sessions.pop(key, None)
+                    keys_to_remove = [k for k in self.active_sessions.keys() if k[0] == message.channel.id]
+                    for k in keys_to_remove:
+                        self.active_sessions.pop(k, None)
                     await message.reply("Marvin locked down and silent. 🔒", mention_author=False)
                     return
+           
                 else:
                     await message.reply("Error: You don't have clearance to lock down my system! 🚫", mention_author=False)
                     return
