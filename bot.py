@@ -15,7 +15,7 @@ from google.genai import types
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
  
-MODEL_NAME = "gemini-3.6-flash"
+MODEL_NAME = "gemini-1.5-flash"
  
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
  
@@ -136,6 +136,7 @@ MAX_CONTEXT_CHARS_PER_MESSAGE = 500
  
 SHARED_CHANNEL_ID = 1548506108279263312
 OWNER_NAMES = ["mrmeowman24_27959", "kandricmayne"]
+ZEPHYR_NAMES = ["Zephyr", "Zephyr Mayne"]
  
  
 # ==========================================================
@@ -260,10 +261,13 @@ class MarvinBot(discord.Client):
         clean_message = self.clean_message_text(message)
         is_shared_channel = message.channel.id == SHARED_CHANNEL_ID
         is_owner = message.author.name in OWNER_NAMES
+        is_zephyr = message.author.name in ZEPHYR_NAMES or speaker_name in ZEPHYR_NAMES
 
         # Owner-only shared room commands
         if is_shared_channel:
-            if clean_message.lower() == "!marvin_engage":
+            cmd = clean_message.lower()
+
+            if cmd in ["!marvin_engage", "!start_marvin"]:
                 if is_owner:
                     self.start_active_session(message.channel.id, message.author.id)
                     await message.reply("Marvin online in the shared link! 🚀", mention_author=False)
@@ -272,7 +276,16 @@ class MarvinBot(discord.Client):
                     await message.reply("Nice try, but only Fire Phoenix or Kandric can engage my circuits here! 🤖", mention_author=False)
                     return
 
-            elif clean_message.lower() == "!marvin_lockdown":
+            elif cmd == "!continue_marvin":
+                if is_owner:
+                    self.start_active_session(message.channel.id, message.author.id)
+                    await message.reply("Session extended! Keeping the circuit alive. ⚡", mention_author=False)
+                    return
+                else:
+                    await message.reply("Nice try, but you can't extend my session without clearance! 🚫", mention_author=False)
+                    return
+
+            elif cmd in ["!marvin_lockdown", "!stop_marvin"]:
                 if is_owner:
                     keys_to_remove = [k for k in self.active_sessions.keys() if k[0] == message.channel.id]
                     for k in keys_to_remove:
@@ -297,8 +310,10 @@ class MarvinBot(discord.Client):
             context_text
         )
  
+        # Allow bot interaction ONLY if it's the specific shared channel AND the author is Zephyr
         if message.author.bot:
-            return
+            if not (is_shared_channel and is_zephyr):
+                return
  
         is_dm = isinstance(message.channel, discord.DMChannel)
         is_mentioned = self.user in message.mentions
@@ -306,9 +321,11 @@ class MarvinBot(discord.Client):
  
         explicit_wake = is_mentioned or is_reply
  
-        # In the shared channel, if an active session exists, keep it open for authorized owners
-        if is_shared_channel and is_owner:
-            if any(ch_id == message.channel.id for (ch_id, u_id) in self.active_sessions.keys()):
+        # In the shared channel, if an active session exists, keep it open for authorized owners or Zephyr
+        if is_shared_channel:
+            if is_zephyr and any(ch_id == message.channel.id for (ch_id, u_id) in self.active_sessions.keys()):
+                explicit_wake = True
+            elif is_owner and any(ch_id == message.channel.id for (ch_id, u_id) in self.active_sessions.keys()):
                 explicit_wake = True
 
         if not is_dm and explicit_wake:
