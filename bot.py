@@ -15,7 +15,7 @@ from google.genai import types
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
  
-MODEL_NAME = "gemini-3.6-flash"
+MODEL_NAME = "gemini-2.5-flash"
  
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
  
@@ -136,7 +136,7 @@ MAX_CONTEXT_CHARS_PER_MESSAGE = 500
  
 SHARED_CHANNEL_ID = 1548506108279263312
 OWNER_NAMES = ["mrmeowman24_27959", "kandricmayne"]
-ZEPHYR_NAMES = ["Zephyr", "Zephyr Mayne"]
+ZEPHYR_NAMES = ["zephyr", "zephyr mayne"]
  
  
 # ==========================================================
@@ -213,6 +213,7 @@ class MarvinBot(discord.Client):
         self.active_sessions[key] = {
             "remaining": MAX_ACTIVE_REPLIES,
             "expires_at": time.monotonic() + ACTIVE_WINDOW_SECONDS,
+            "warned_5": False,
         }
  
     def has_active_session(self, channel_id, user_id):
@@ -232,11 +233,23 @@ class MarvinBot(discord.Client):
         key = (channel_id, user_id)
         session = self.active_sessions.get(key)
         if not session:
-            return
+            return None
+        
+        # Only consume if it's a bot exchange or non-owner message
         session["remaining"] -= 1
         session["expires_at"] = time.monotonic() + ACTIVE_WINDOW_SECONDS
-        if session["remaining"] <= 0:
+        
+        remaining = session["remaining"]
+        warn_5 = False
+        
+        if remaining == 5 and not session.get("warned_5", False):
+            session["warned_5"] = True
+            warn_5 = True
+
+        if remaining <= 0:
             self.active_sessions.pop(key, None)
+            
+        return remaining, warn_5
  
     def clean_message_text(self, message):
         content = message.content or ""
@@ -261,7 +274,10 @@ class MarvinBot(discord.Client):
         clean_message = self.clean_message_text(message)
         is_shared_channel = message.channel.id == SHARED_CHANNEL_ID
         is_owner = message.author.name in OWNER_NAMES
-        is_zephyr = message.author.name in ZEPHYR_NAMES or speaker_name in ZEPHYR_NAMES
+        is_zephyr = (
+            message.author.name.lower() in ZEPHYR_NAMES
+            or speaker_name.lower() in ZEPHYR_NAMES
+        )
 
         # Owner-only shared room commands
         if is_shared_channel:
@@ -270,7 +286,7 @@ class MarvinBot(discord.Client):
             if cmd in ["!marvin_engage", "!start_marvin"]:
                 if is_owner:
                     self.start_active_session(message.channel.id, message.author.id)
-                    await message.reply("Marvin online in the shared link! 🚀", mention_author=False)
+                    await message.reply("Marvin online in the shared link! 🚀 (25 message limit engaged)", mention_author=False)
                     return
                 else:
                     await message.reply("Nice try, but only Fire Phoenix or Kandric can engage my circuits here! 🤖", mention_author=False)
@@ -347,6 +363,11 @@ class MarvinBot(discord.Client):
             self.start_active_session(message.channel.id, message.author.id)
             active_followup = True
 
+        # In the shared channel, human owner messages shouldn't trigger Marvin to chat unless explicitly summoned, 
+        # but if an active session is running with Zephyr, let bot-to-bot/active dialogue flow without human messages resetting caps.
+        if is_shared_channel and is_owner and not explicit_wake:
+            return
+
         if not is_dm and not explicit_wake and not active_followup:
             return
  
@@ -387,10 +408,12 @@ Keep the reply conversational and usually concise.
                     prompt
                 )
  
-                reply_text = (
-                    response.text
-                    or "Uh... my brain just went blank."
-                ).strip()
+                reply_text = "Uh... my brain just went blank."
+                try:
+                    if response and response.text:
+                        reply_text = response.text.strip()
+                except Exception:
+                    reply_text = "Uh... my brain just went blank."
  
                 if not reply_text:
                     reply_text = "Uh... my brain just went blank."
@@ -409,15 +432,21 @@ Keep the reply conversational and usually concise.
                     )
  
                 if not is_dm:
-                    self.consume_active_reply(
+                    result = self.consume_active_reply(
                         message.channel.id,
                         message.author.id
                     )
- 
+                    if result:
+                        remaining, warn_5 = result
+                        if warn_5:
+                            await message.channel.send("⚠️ Heads up! Marvin and Zephyr only have 5 message exchanges left in this direct link session!")
+                        elif remaining <= 0:
+                            await message.channel.send("🔒 Direct link session message cap reached! Marvin is locking down.")
+
             except Exception as error:
                 print(f"ERROR: {type(error).__name__}: {error}")
                 await message.reply(
-                    "Okay, something just went wrong in my brain. "
+                    f"Okay, something just went wrong in my brain ({type(error).__name__}). "
                     "Give me a second and try that again. 😅",
                     mention_author=False
                 )
