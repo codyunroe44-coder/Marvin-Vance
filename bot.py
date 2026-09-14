@@ -305,9 +305,11 @@ class MarvinBot(discord.Client):
  
         explicit_wake = is_mentioned or is_reply
  
-        # In the shared channel, once engaged by owners, treat their messages as active without requiring tags
-        if is_shared_channel and is_owner and self.has_active_session(message.channel.id, message.author.id):
-            explicit_wake = True
+# In the shared channel, if anyone authorized talks while a session is active in the room, keep it open
+        if is_shared_channel and is_owner:
+            channel_has_active = any(ch_id == message.channel.id for (ch_id, u_id) in self.active_sessions.keys())
+            if channel_has_active:
+                explicit_wake = True
 
         if not is_dm and explicit_wake:
             self.start_active_session(
