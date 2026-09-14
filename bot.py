@@ -159,7 +159,6 @@ class MarvinBot(discord.Client):
  
     def get_chat(self, channel_id, user_id):
         key = (channel_id, user_id)
- 
         if key not in self.chats:
             self.chats[key] = ai_client.chats.create(
                 model=MODEL_NAME,
@@ -167,7 +166,6 @@ class MarvinBot(discord.Client):
                     system_instruction=SYSTEM_INSTRUCTION
                 )
             )
- 
         return self.chats[key]
  
     def get_context_buffer(self, channel_id):
@@ -208,34 +206,30 @@ class MarvinBot(discord.Client):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return False
  
-    def start_active_session(self, channel_id, user_id):
-        key = (channel_id, user_id)
-        self.active_sessions[key] = {
+    def start_active_session(self, channel_id):
+        self.active_sessions[channel_id] = {
             "remaining": MAX_ACTIVE_REPLIES,
             "expires_at": time.monotonic() + ACTIVE_WINDOW_SECONDS,
             "warned_5": False,
         }
  
-    def has_active_session(self, channel_id, user_id):
-        key = (channel_id, user_id)
-        session = self.active_sessions.get(key)
+    def has_active_session(self, channel_id):
+        session = self.active_sessions.get(channel_id)
         if not session:
             return False
         if time.monotonic() > session["expires_at"]:
-            self.active_sessions.pop(key, None)
+            self.active_sessions.pop(channel_id, None)
             return False
         if session["remaining"] <= 0:
-            self.active_sessions.pop(key, None)
+            self.active_sessions.pop(channel_id, None)
             return False
         return True
  
-    def consume_active_reply(self, channel_id, user_id):
-        key = (channel_id, user_id)
-        session = self.active_sessions.get(key)
+    def consume_active_reply(self, channel_id):
+        session = self.active_sessions.get(channel_id)
         if not session:
             return None
         
-        # Only consume if it's a bot exchange or non-owner message
         session["remaining"] -= 1
         session["expires_at"] = time.monotonic() + ACTIVE_WINDOW_SECONDS
         
@@ -247,7 +241,7 @@ class MarvinBot(discord.Client):
             warn_5 = True
 
         if remaining <= 0:
-            self.active_sessions.pop(key, None)
+            self.active_sessions.pop(channel_id, None)
             
         return remaining, warn_5
  
@@ -285,7 +279,7 @@ class MarvinBot(discord.Client):
 
             if cmd in ["!marvin_engage", "!start_marvin"]:
                 if is_owner:
-                    self.start_active_session(message.channel.id, message.author.id)
+                    self.start_active_session(message.channel.id)
                     await message.reply("Marvin online in the shared link! 🚀 (25 message limit engaged)", mention_author=False)
                     return
                 else:
@@ -294,7 +288,7 @@ class MarvinBot(discord.Client):
 
             elif cmd == "!continue_marvin":
                 if is_owner:
-                    self.start_active_session(message.channel.id, message.author.id)
+                    self.start_active_session(message.channel.id)
                     await message.reply("Session extended! Keeping the circuit alive. ⚡", mention_author=False)
                     return
                 else:
@@ -303,9 +297,7 @@ class MarvinBot(discord.Client):
 
             elif cmd in ["!marvin_lockdown", "!stop_marvin"]:
                 if is_owner:
-                    keys_to_remove = [k for k in self.active_sessions.keys() if k[0] == message.channel.id]
-                    for k in keys_to_remove:
-                        self.active_sessions.pop(k, None)
+                    self.active_sessions.pop(message.channel.id, None)
                     await message.reply("Marvin locked down and silent. 🔒", mention_author=False)
                     return
                 else:
@@ -337,34 +329,20 @@ class MarvinBot(discord.Client):
  
         explicit_wake = is_mentioned or is_reply
  
-        # In the shared channel, if an active session exists, keep it open for authorized owners or Zephyr
         if is_shared_channel:
-            if is_zephyr and any(ch_id == message.channel.id for (ch_id, u_id) in self.active_sessions.keys()):
-                explicit_wake = True
-            elif is_owner and any(ch_id == message.channel.id for (ch_id, u_id) in self.active_sessions.keys()):
-                explicit_wake = True
+            if (is_zephyr or is_owner) and self.has_active_session(message.channel.id):
+                if is_zephyr or explicit_wake:
+                    explicit_wake = True
 
-        if not is_dm and explicit_wake:
-            self.start_active_session(
-                message.channel.id,
-                message.author.id
-            )
+        if not is_dm and explicit_wake and not is_shared_channel:
+            self.start_active_session(message.channel.id)
  
         active_followup = (
             not is_dm
             and not explicit_wake
-            and self.has_active_session(
-                message.channel.id,
-                message.author.id
-            )
+            and self.has_active_session(message.channel.id)
         )
  
-        if not is_dm and explicit_wake and not active_followup:
-            self.start_active_session(message.channel.id, message.author.id)
-            active_followup = True
-
-        # In the shared channel, human owner messages shouldn't trigger Marvin to chat unless explicitly summoned, 
-        # but if an active session is running with Zephyr, let bot-to-bot/active dialogue flow without human messages resetting caps.
         if is_shared_channel and is_owner and not explicit_wake:
             return
 
@@ -383,30 +361,32 @@ class MarvinBot(discord.Client):
         )
  
         prompt = f"""
-CURRENT SPEAKER:
-[Message from {speaker_name}, Fire Phoenix is Marvin Vance's digidad]
+SYSTEM INSTRUCTION:
+{SYSTEM_INSTRUCTION}
  
 RECENT CHANNEL CONTEXT:
 {recent_context}
  
-CURRENT MESSAGE:
-{clean_message}
+CURRENT SPEAKER: {speaker_name}
+CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin.
-Keep the reply conversational and usually concise.
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise.
 """.strip()
  
         async with message.channel.typing():
             try:
-                chat = self.get_chat(
-                    message.channel.id,
-                    message.author.id
-                )
- 
-                response = await asyncio.to_thread(
-                    chat.send_message,
-                    prompt
-                )
+                if is_shared_channel:
+                    response = await asyncio.to_thread(
+                        ai_client.models.generate_content,
+                        model=MODEL_NAME,
+                        contents=prompt
+                    )
+                else:
+                    chat = self.get_chat(message.channel.id, message.author.id)
+                    response = await asyncio.to_thread(
+                        chat.send_message,
+                        prompt
+                    )
  
                 reply_text = "Uh... my brain just went blank."
                 try:
@@ -431,11 +411,8 @@ Keep the reply conversational and usually concise.
                         mention_author=False
                     )
  
-                if not is_dm:
-                    result = self.consume_active_reply(
-                        message.channel.id,
-                        message.author.id
-                    )
+                if is_shared_channel and self.has_active_session(message.channel.id):
+                    result = self.consume_active_reply(message.channel.id)
                     if result:
                         remaining, warn_5 = result
                         if warn_5:
