@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import re
+from datetime import datetime
 from collections import deque
  
 import discord
@@ -258,7 +259,6 @@ class MarvinBot(discord.Client):
         return content
 
     async def fetch_url_content(self, url):
-        """Fetches webpage title using built-in regex without needing bs4."""
         headers = {"User-Agent": "Mozilla/5.0 (Compatible; MarvinBot/1.0)"}
         try:
             async with aiohttp.ClientSession() as session:
@@ -277,6 +277,11 @@ class MarvinBot(discord.Client):
         if message.author.id == self.user.id:
             return
  
+        # Check if Marvin is asleep (1 AM to 8 AM)
+        current_hour = datetime.now().hour
+        if 1 <= current_hour < 8:
+            return  # Silently ignore everything while he's sleeping
+
         speaker_name = getattr(
             message.author,
             "display_name",
@@ -503,7 +508,7 @@ if not DISCORD_TOKEN:
  
 if not GEMINI_API_KEY:
     raise RuntimeError(
-        "GEMINI_API_KEY is missing from Railway Variables."
+        "GEMINI_API_KEY is missing from RailwayVariables."
     )
  
 client = MarvinBot(intents=intents)
