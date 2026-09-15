@@ -1,3 +1,4 @@
 discord.py
 google-genai
-psycopg2-binary
+beautifulsoup4
+aiohttp
