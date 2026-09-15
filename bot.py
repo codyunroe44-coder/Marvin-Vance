@@ -1,9 +1,12 @@
 import os
 import time
 import asyncio
+import re
 from collections import deque
  
 import discord
+import aiohttp
+from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
  
@@ -254,6 +257,36 @@ class MarvinBot(discord.Client):
             .strip()
         )
         return content
+
+    async def fetch_url_content(self, url):
+        """Scrapes webpage title and summary text so Marvin can read links."""
+        headers = {"User-Agent": "Mozilla/5.0 (Compatible; MarvinBot/1.0)"}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=5) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, "html.parser")
+                        title = soup.title.string.strip() if soup.title else url
+                        
+                        # Grab a brief snippet of meta description or paragraph text
+                        meta_desc = ""
+                        meta_tag = soup.find("property", attrs={"name": "description"}) or soup.find("meta", attrs={"name": "description"})
+                        if meta_tag and meta_tag.get("content"):
+                            meta_desc = meta_tag.get("content").strip()
+                        else:
+                            p_tag = soup.find("p")
+                            if p_tag:
+                                meta_desc = p_tag.get_text().strip()
+
+                        snippet = f"[Shared Link Contents - Title: '{title}'"
+                        if meta_desc:
+                            snippet += f" | Summary: '{meta_desc[:200]}...'"
+                        snippet += "]"
+                        return snippet
+        except Exception as e:
+            print(f"Error fetching URL {url}: {e}")
+        return f"[Shared Link: {url}]"
  
     async def on_message(self, message):
         if message.author.id == self.user.id:
@@ -309,6 +342,17 @@ class MarvinBot(discord.Client):
                 return
 
         context_text = clean_message
+
+        # URL extraction and fetching support
+        url_pattern = re.compile(r'https?://[^\s]+')
+        found_urls = url_pattern.findall(clean_message)
+        if found_urls:
+            url_summaries = []
+            for url in found_urls[:2]: # Limit to first 2 links per message to avoid bloat
+                summary = await self.fetch_url_content(url)
+                url_summaries.append(summary)
+            if url_summaries:
+                context_text = f"{context_text} " + " ".join(url_summaries)
  
         # Multimodal attachment processing (supports images and videos)
         if message.attachments:
