@@ -267,7 +267,6 @@ class MarvinBot(discord.Client):
                         html = await response.text()
                         match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
                         title = match.group(1).strip() if match else url
-                        # Clean up HTML entities or weird spacing if any
                         title = re.sub(r'\s+', ' ', title)
                         return f"[Shared Link Title: '{title}']"
         except Exception as e:
