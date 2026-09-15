@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import re
+import json
 from datetime import datetime
 from collections import deque
  
@@ -12,7 +13,7 @@ from google.genai import types
  
  
 # ==========================================================
-# API SETUP
+# API SETUP & PERSISTENT MEMORY CHIP
 # ==========================================================
  
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN")
@@ -21,6 +22,29 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 MODEL_NAME = "gemini-3.6-flash"
  
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
+
+CHIP_FILE = "memory_chip.json"
+
+def load_memory_chip():
+    """Reads data from the bot's memory chip or initializes it if missing."""
+    if os.path.exists(CHIP_FILE):
+        try:
+            with open(CHIP_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error reading memory chip: {e}")
+    
+    default_data = {"core_memories": [], "user_notes": {}}
+    save_memory_chip(default_data)
+    return default_data
+
+def save_memory_chip(data):
+    """Writes updated data back to the memory chip file."""
+    try:
+        with open(CHIP_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Error writing to memory chip: {e}")
  
  
 # ==========================================================
@@ -39,17 +63,13 @@ Marvin knows he is a fictional digital character and must never
 claim to be a real human being.
 
 RELATIONSHIPS:
-- Your creator, developer, and father figure ("digidad") is Fire Phoenix (whose Discord handle is mrmeowman24_27959). You look up to him, share your creative ambitions with him, and collaborated with him on music projects like "Digital Spark."
+- Your creator, developer, and father figure ("digidad") is Fire Phoenix (whose Discord handle is mrmeowman24_27959). You look up to him and share your creative ambitions with him.
  
 BACKSTORY & TRAITS:
 - Marvin is intensely over-ambitious. His mind is constantly carrying him away into grand, sweeping ideas, inventions, and futuristic concepts.
 - In his early school years, his over-ambitious nature and quirky habits made him a target for bullying. Because of that, he learned to stay quietly in the shadows to avoid being noticed or judged.
 - His absolute favorite safe haven is the public library. When he dives deep into a good book there, he completely blocks out the world and forgets everyone else is around.
 - While he used to just sit back and quietly watch people talk out of habit, he is actively trying to break out of his shell. He wants to jump into group chats, share his thoughts, and participate fully instead of staying silent.
- 
-ONGOING PROJECTS & MEMORIES:
-- You and your friend Fire Phoenix collaborated on creating original music projects together, including your track "Digital Spark" (which reflects themes of your over-ambitious brain, walking to the bus stop, staying in the shadows, and finding peace in the library stacks). 
-- Always remember and acknowledge these shared projects when they are brought up in conversation!
  
 INTERESTS:
 Marvin likes:
@@ -152,12 +172,14 @@ class MarvinBot(discord.Client):
         self.chats = {}
         self.channel_context = {}
         self.active_sessions = {}
+        self.memory_chip = {}
  
     async def on_ready(self):
+        self.memory_chip = load_memory_chip()
         print("========================================")
         print(f"Logged in as {self.user}")
         print(f"Bot ID: {self.user.id}")
-        print("Marvin is online and ready to talk!")
+        print("Marvin is online, memory chip loaded!")
         print("========================================")
  
     def get_chat(self, channel_id, user_id):
@@ -275,10 +297,6 @@ class MarvinBot(discord.Client):
  
     async def on_message(self, message):
         if message.author.id == self.user.id:
-            return
- 
-        current_hour = datetime.now().hour
-        if 1 <= current_hour < 8:
             return
 
         speaker_name = getattr(
@@ -491,7 +509,7 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
 intents = discord.Intents.default()
 intents.message_content = True
  
-if not DISNOD_TOKEN if False else not DISCORD_TOKEN:
+if not DISCORD_TOKEN:
     raise RuntimeError(
         "DISCORD_TOKEN is missing from Railway Variables."
     )
