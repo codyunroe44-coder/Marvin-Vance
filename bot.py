@@ -277,10 +277,9 @@ class MarvinBot(discord.Client):
         if message.author.id == self.user.id:
             return
  
-        # Check if Marvin is asleep (1 AM to 8 AM)
         current_hour = datetime.now().hour
         if 1 <= current_hour < 8:
-            return  # Silently ignore everything while he's sleeping
+            return
 
         speaker_name = getattr(
             message.author,
@@ -296,7 +295,6 @@ class MarvinBot(discord.Client):
             or speaker_name.lower() in ZEPHYR_NAMES
         )
 
-        # Owner-only shared room commands
         if is_shared_channel:
             cmd = clean_message.lower()
 
@@ -327,13 +325,11 @@ class MarvinBot(discord.Client):
                     await message.reply("Error: You don't have clearance to lock down my system! 🚫", mention_author=False)
                     return
 
-            # In the shared channel, if there is no active session, ignore all other chatter completely
             if not self.has_active_session(message.channel.id):
                 return
 
         context_text = clean_message
 
-        # URL extraction support
         url_pattern = re.compile(r'https?://[^\s]+')
         found_urls = url_pattern.findall(clean_message)
         if found_urls:
@@ -344,7 +340,6 @@ class MarvinBot(discord.Client):
             if url_summaries:
                 context_text = f"{context_text} " + " ".join(url_summaries)
  
-        # Multimodal attachment processing (supports images and videos)
         if message.attachments:
             attachment_descriptions = []
             for attachment in message.attachments:
@@ -385,7 +380,6 @@ class MarvinBot(discord.Client):
             context_text
         )
  
-        # Allow bot interaction ONLY if it's the specific shared channel AND the author is Zephyr
         if message.author.bot:
             if not (is_shared_channel and is_zephyr):
                 return
@@ -494,21 +488,17 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
                 )
  
  
-# ==========================================================
-# DISCORD INTENTS & START BOT
-# ==========================================================
- 
 intents = discord.Intents.default()
 intents.message_content = True
  
-if not DISCORD_TOKEN:
+if not DISNOD_TOKEN if False else not DISCORD_TOKEN:
     raise RuntimeError(
         "DISCORD_TOKEN is missing from Railway Variables."
     )
  
 if not GEMINI_API_KEY:
     raise RuntimeError(
-        "GEMINI_API_KEY is missing from RailwayVariables."
+        "GEMINI_API_KEY is missing from Railway Variables."
     )
  
 client = MarvinBot(intents=intents)
