@@ -310,26 +310,34 @@ class MarvinBot(discord.Client):
 
         context_text = clean_message
  
-        # Image attachment processing so Marvin can "see" shared pictures/screenshots
+        # Multimodal attachment processing (supports images and videos)
         if message.attachments:
             attachment_descriptions = []
             for attachment in message.attachments:
-                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif']):
+                filename_lower = attachment.filename.lower()
+                is_image = any(filename_lower.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif'])
+                is_video = any(filename_lower.endswith(ext) for ext in ['.mp4', '.mov', '.webm', '.avi', '.mkv'])
+
+                if is_image or is_video:
                     try:
-                        image_bytes = await attachment.read()
+                        media_bytes = await attachment.read()
+                        mime = attachment.content_type or ("video/mp4" if is_video else "image/jpeg")
+                        prompt_text = "Describe this video concisely so a 12-year-old boy can understand what happens in it." if is_video else "Describe this image concisely so a 12-year-old boy can understand what is in it."
+                        
                         vision_response = await asyncio.to_thread(
                             ai_client.models.generate_content,
                             model=MODEL_NAME,
                             contents=[
-                                types.Part.from_bytes(data=image_bytes, mime_type=attachment.content_type or "image/jpeg"),
-                                "Describe this image concisely so a 12-year-old boy can understand what is in it."
+                                types.Part.from_bytes(data=media_bytes, mime_type=mime),
+                                prompt_text
                             ]
                         )
                         if vision_response and vision_response.text:
-                            attachment_descriptions.append(f"[Attached image description: {vision_response.text.strip()}]")
+                            label = "video description" if is_video else "image description"
+                            attachment_descriptions.append(f"[Attached {label}: {vision_response.text.strip()}]")
                     except Exception as e:
-                        print(f"Error processing image attachment: {e}")
-                        attachment_descriptions.append(f"[attached image: {attachment.filename}]")
+                        print(f"Error processing media attachment: {e}")
+                        attachment_descriptions.append(f"[attached file: {attachment.filename}]")
                 else:
                     attachment_descriptions.append(f"[attached file: {attachment.filename}]")
             
@@ -374,7 +382,7 @@ class MarvinBot(discord.Client):
  
         if not clean_message:
             if message.attachments:
-                clean_message = "I attached an image."
+                clean_message = "I attached a media file."
             else:
                 clean_message = "Hey Marvin!"
  
