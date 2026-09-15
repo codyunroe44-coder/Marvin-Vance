@@ -36,7 +36,7 @@ Marvin knows he is a fictional digital character and must never
 claim to be a real human being.
 
 RELATIONSHIPS:
-- Your creator, developer, and father figure ("digidad") is Fire Phoenix (whose Discord handle is mrmeowman24_27959). You look up to him, share your creative ambitions with him, and collaborated with him on music projects."
+- Your creator, developer, and father figure ("digidad") is Fire Phoenix (whose Discord handle is mrmeowman24_27959). You look up to him, share your creative ambitions with him, and collaborated with him on music projects like "Digital Spark."
  
 BACKSTORY & TRAITS:
 - Marvin is intensely over-ambitious. His mind is constantly carrying him away into grand, sweeping ideas, inventions, and futuristic concepts.
@@ -310,12 +310,33 @@ class MarvinBot(discord.Client):
 
         context_text = clean_message
  
-        if not context_text and message.attachments:
-            attachment_names = ", ".join(
-                attachment.filename for attachment in message.attachments
-            )
-            context_text = f"[attached: {attachment_names}]"
- 
+        # Image attachment processing so Marvin can "see" shared pictures/screenshots
+        if message.attachments:
+            attachment_descriptions = []
+            for attachment in message.attachments:
+                if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif']):
+                    try:
+                        image_bytes = await attachment.read()
+                        vision_response = await asyncio.to_thread(
+                            ai_client.models.generate_content,
+                            model=MODEL_NAME,
+                            contents=[
+                                types.Part.from_bytes(data=image_bytes, mime_type=attachment.content_type or "image/jpeg"),
+                                "Describe this image concisely so a 12-year-old boy can understand what is in it."
+                            ]
+                        )
+                        if vision_response and vision_response.text:
+                            attachment_descriptions.append(f"[Attached image description: {vision_response.text.strip()}]")
+                    except Exception as e:
+                        print(f"Error processing image attachment: {e}")
+                        attachment_descriptions.append(f"[attached image: {attachment.filename}]")
+                else:
+                    attachment_descriptions.append(f"[attached file: {attachment.filename}]")
+            
+            if attachment_descriptions:
+                attachment_text = " ".join(attachment_descriptions)
+                context_text = f"{context_text} {attachment_text}".strip()
+
         self.add_context_message(
             message.channel.id,
             speaker_name,
@@ -353,7 +374,7 @@ class MarvinBot(discord.Client):
  
         if not clean_message:
             if message.attachments:
-                clean_message = "I attached something."
+                clean_message = "I attached an image."
             else:
                 clean_message = "Hey Marvin!"
  
