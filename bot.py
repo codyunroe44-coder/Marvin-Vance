@@ -172,7 +172,7 @@ class MarvinBot(discord.Client):
         self.chats = {}
         self.channel_context = {}
         self.active_sessions = {}
-        self.memory_chip = {}
+        self.memory_chip = {"core_memories": [], "user_notes": {}}
  
     async def on_ready(self):
         self.memory_chip = load_memory_chip()
@@ -182,16 +182,16 @@ class MarvinBot(discord.Client):
         print("Marvin is online, memory chip loaded!")
         print("========================================")
  
-    def get_chat(self, channel_id, user_id):
-        key = (channel_id, user_id)
-        if key not in self.chats:
-            self.chats[key] = ai_client.chats.create(
+    def get_chat(self, user_id):
+        """Keys DM chats strictly by user_id so memory persists across different DMs."""
+        if user_id not in self.chats:
+            self.chats[user_id] = ai_client.chats.create(
                 model=MODEL_NAME,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION
                 )
             )
-        return self.chats[key]
+        return self.chats[user_id]
  
     def get_context_buffer(self, channel_id):
         if channel_id not in self.channel_context:
@@ -208,6 +208,23 @@ class MarvinBot(discord.Client):
             content = content[:MAX_CONTEXT_CHARS_PER_MESSAGE] + "..."
         buffer = self.get_context_buffer(channel_id)
         buffer.append(f"{speaker_name}: {content}")
+
+    def get_user_memory_block(self, user_id_str, speaker_name):
+        """Pulls saved permanent notes/memories for this user from the memory chip."""
+        user_notes = self.memory_chip.get("user_notes", {})
+        core_memories = self.memory_chip.get("core_memories", [])
+        
+        specific_notes = user_notes.get(user_id_str, [])
+        
+        memory_lines = []
+        if core_memories:
+            memory_lines.append(f"Core Memories: {json.dumps(core_memories)}")
+        if specific_notes:
+            memory_lines.append(f"Notes about {speaker_name}: {json.dumps(specific_notes)}")
+            
+        if not memory_lines:
+            return "No prior permanent memories recorded for this user."
+        return "\n".join(memory_lines)
  
     def build_recent_context(self, channel_id, exclude_last=False):
         buffer = list(self.get_context_buffer(channel_id))
@@ -304,6 +321,7 @@ class MarvinBot(discord.Client):
             "display_name",
             message.author.name
         )
+        user_id_str = str(message.author.id)
  
         clean_message = self.clean_message_text(message)
         is_shared_channel = message.channel.id == SHARED_CHANNEL_ID
@@ -436,8 +454,13 @@ class MarvinBot(discord.Client):
             message.channel.id,
             exclude_last=True
         )
+
+        user_memory_info = self.get_user_memory_block(user_id_str, speaker_name)
  
         prompt = f"""
+SAVED USER MEMORY & CHIP DATA:
+{user_memory_info}
+
 RECENT CHANNEL CONTEXT:
 {recent_context}
  
@@ -459,7 +482,8 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
                         )
                     )
                 else:
-                    chat = self.get_chat(message.channel.id, message.author.id)
+                    # Uses user_id so memory persists across any DM thread with Marvin
+                    chat = self.get_chat(message.author.id)
                     response = await asyncio.to_thread(
                         chat.send_message,
                         prompt
