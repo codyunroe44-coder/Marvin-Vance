@@ -183,12 +183,13 @@ class MarvinBot(discord.Client):
         print("========================================")
  
     def get_chat(self, user_id):
-        """Keys DM chats strictly by user_id so memory persists across different DMs."""
+        """Keys DM chats strictly by user_id with Google Search enabled."""
         if user_id not in self.chats:
             self.chats[user_id] = ai_client.chats.create(
                 model=MODEL_NAME,
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    tools=[{"google_search": {}}]
                 )
             )
         return self.chats[user_id]
@@ -478,11 +479,11 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
                         model=MODEL_NAME,
                         contents=prompt,
                         config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_INSTRUCTION
+                            system_instruction=SYSTEM_INSTRUCTION,
+                            tools=[{"google_search": {}}]
                         )
                     )
                 else:
-                    # Uses user_id so memory persists across any DM thread with Marvin
                     chat = self.get_chat(message.author.id)
                     response = await asyncio.to_thread(
                         chat.send_message,
