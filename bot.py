@@ -226,6 +226,18 @@ class MarvinBot(discord.Client):
         if not memory_lines:
             return "No prior permanent memories recorded for this user."
         return "\n".join(memory_lines)
+
+    def update_user_memory(self, user_id_str, new_fact):
+        """Automatically syncs and saves a new fact about a user globally to the memory chip."""
+        if "user_notes" not in self.memory_chip:
+            self.memory_chip["user_notes"] = {}
+            
+        if user_id_str not in self.memory_chip["user_notes"]:
+            self.memory_chip["user_notes"][user_id_str] = []
+            
+        if new_fact not in self.memory_chip["user_notes"][user_id_str]:
+            self.memory_chip["user_notes"][user_id_str].append(new_fact)
+            save_memory_chip(self.memory_chip)
  
     def build_recent_context(self, channel_id, exclude_last=False):
         buffer = list(self.get_context_buffer(channel_id))
@@ -468,7 +480,7 @@ RECENT CHANNEL CONTEXT:
 CURRENT SPEAKER: {speaker_name}
 CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise.
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If they share an important permanent fact about themselves that you should remember across servers, you can include a tag like [SAVE_NOTE: fact] at the end of your reply.
 """.strip()
  
         async with message.channel.typing():
@@ -499,6 +511,14 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
  
                 if not reply_text:
                     reply_text = "Uh... my brain just went blank."
+
+                # Check if Marvin generated a dynamic note-saving tag
+                note_match = re.search(r'\[SAVE_NOTE:\s*(.*?)\]', reply_text, re.IGNORECASE)
+                if note_match:
+                    extracted_fact = note_match.group(1).strip()
+                    self.update_user_memory(user_id_str, extracted_fact)
+                    # Clean the tag out of the message sent to Discord
+                    reply_text = re.sub(r'\[SAVE_NOTE:\s*.*?\]', '', reply_text).strip()
  
                 self.add_context_message(
                     message.channel.id,
