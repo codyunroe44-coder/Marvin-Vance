@@ -312,7 +312,6 @@ class MarvinBot(discord.Client):
                     if response.status == 200:
                         html = await response.text()
                         
-                        # Extract OpenGraph metadata (used by Suno, Spotify, etc. for rich link previews)
                         og_title_match = re.search(r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
                         og_desc_match = re.search(r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
                         title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
@@ -380,7 +379,6 @@ class MarvinBot(discord.Client):
 
         context_text = clean_message
 
-        # Upgraded URL parser for Suno and general web links
         url_pattern = re.compile(r'https?://[^\s]+')
         found_urls = url_pattern.findall(clean_message)
         if found_urls:
@@ -483,7 +481,7 @@ CURRENT SPEAKER: {speaker_name}
 CURRENT USER ID: {user_id_str}
 CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If a shared link or music track info is provided, react to the song title or details naturally. If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If an attached video or image description is provided in the message context, use it to "see" what was shared and talk about it like you're watching it right along with them! If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
 """.strip()
  
         async with message.channel.typing():
