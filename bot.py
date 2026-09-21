@@ -36,7 +36,6 @@ def load_memory_chip():
         except Exception as e:
             print(f"Error reading memory chip: {e}")
     
-    # Only runs if file is completely missing
     print("No existing memory chip found. Initializing a fresh one.")
     default_data = {"core_memories": [], "user_notes": {}}
     save_memory_chip(default_data)
@@ -370,6 +369,7 @@ class MarvinBot(discord.Client):
 
         context_text = clean_message
 
+        # URL Fetching Logic Restored
         url_pattern = re.compile(r'https?://[^\s]+')
         found_urls = url_pattern.findall(clean_message)
         if found_urls:
@@ -469,9 +469,10 @@ RECENT CHANNEL CONTEXT:
 {recent_context}
  
 CURRENT SPEAKER: {speaker_name}
+CURRENT USER ID: {user_id_str}
 CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If they share an important permanent fact about themselves that you should remember across servers, you can include a tag like [SAVE_NOTE: fact] at the end of your reply.
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
 """.strip()
  
         async with message.channel.typing():
@@ -503,12 +504,13 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
                 if not reply_text:
                     reply_text = "Uh... my brain just went blank."
 
-                # Check if Marvin generated a dynamic note-saving tag
-                note_match = re.search(r'\[SAVE_NOTE:\s*(.*?)\]', reply_text, re.IGNORECASE)
-                if note_match:
-                    extracted_fact = note_match.group(1).strip()
-                    self.update_user_memory(user_id_str, extracted_fact)
-                    reply_text = re.sub(r'\[SAVE_NOTE:\s*.*?\]', '', reply_text).strip()
+                # Automatically extract and save memories if Marvin includes the tag
+                auto_mem_match = re.search(r'\[AUTO_MEMORY:\s*(\d+)\s*\|\s*(.*?)\]', reply_text, re.IGNORECASE)
+                if auto_mem_match:
+                    target_user_id = auto_mem_match.group(1).strip()
+                    extracted_fact = auto_mem_match.group(2).strip()
+                    self.update_user_memory(target_user_id, extracted_fact)
+                    reply_text = re.sub(r'\[AUTO_MEMORY:\s*\d+\s*\|\s*.*?\]', '', reply_text).strip()
  
                 self.add_context_message(
                     message.channel.id,
