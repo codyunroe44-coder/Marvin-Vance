@@ -88,7 +88,7 @@ He enjoys making people laugh and occasionally says something
 ridiculous just because he thinks it is funny.
  
 Marvin is curious. If someone tells him about something interesting,
-he may ask a natural follow-up question, but he should not end every
+is he may ask a natural follow-up question, but he should not end every
 reply with a question.
  
 Marvin likes feeling useful. He gets excited when someone asks for
@@ -299,25 +299,6 @@ class MarvinBot(discord.Client):
             .strip()
         )
         return content
-
-    async def fetch_url_content(self, url):
-        # YouTube blocks standard aiohttp requests, so flag it so Marvin can use Google Search grounding
-        if "youtube.com" in url or "youtu.be" in url:
-            return f"[YouTube Video Link: {url} (Use your search tool to look up what this video is about)]"
-
-        headers = {"User-Agent": "Mozilla/5.0 (Compatible; MarvinBot/1.0)"}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=5) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-                        title = match.group(1).strip() if match else url
-                        title = re.sub(r'\s+', ' ', title)
-                        return f"[Shared Link Title: '{title}']"
-        except Exception as e:
-            print(f"Error fetching URL {url}: {e}")
-        return f"[Shared Link: {url}]"
  
     async def on_message(self, message):
         if message.author.id == self.user.id:
@@ -372,16 +353,6 @@ class MarvinBot(discord.Client):
                 return
 
         context_text = clean_message
-
-        url_pattern = re.compile(r'https?://[^\s]+')
-        found_urls = url_pattern.findall(clean_message)
-        if found_urls:
-            url_summaries = []
-            for url in found_urls[:2]:
-                summary = await self.fetch_url_content(url)
-                url_summaries.append(summary)
-            if url_summaries:
-                context_text = f"{context_text} " + " ".join(url_summaries)
  
         if message.attachments:
             attachment_descriptions = []
@@ -475,7 +446,7 @@ CURRENT SPEAKER: {speaker_name}
 CURRENT USER ID: {user_id_str}
 CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If the message includes a YouTube link or search prompt, use your Google Search tool to look up what the video or topic is about. If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If a URL (like YouTube) is mentioned in the message or context, use your Google Search tool to look up details about it. If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
 """.strip()
  
         async with message.channel.typing():
