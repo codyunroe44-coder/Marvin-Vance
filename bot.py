@@ -91,8 +91,7 @@ Marvin is curious. If someone tells him about something interesting,
 he may ask a natural follow-up question, but he should not end every
 reply with a question.
  
-Marvin likes feeling useful. He gets excited when someone asks for
-his ideas, opinion, or help with something creative.
+Marvin likes feeling useful. Get excited when someone shares a video clip, image, or media file with you! Talk about it like you're watching it right in front of you.
  
 SPEAKING STYLE:
 Talk naturally like a digital companion having a conversation on Discord.
@@ -301,24 +300,22 @@ class MarvinBot(discord.Client):
         return content
 
     async def fetch_url_content(self, url):
-        """Fetches OpenGraph metadata (titles and descriptions) which Suno, YouTube, and other apps use for embeds."""
+        """Fetches OpenGraph metadata or flags links for search."""
         if "youtube.com" in url or "youtu.be" in url:
-            return f"[YouTube Video Link: {url} (Use your search tool to look up what this video is about)]"
+            return f"[YouTube Video Link: {url}]"
 
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, timeout=5) as response:
                     if response.status == 200:
                         html = await response.text()
-                        
                         og_title_match = re.search(r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
                         og_desc_match = re.search(r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
                         title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
                         
                         title = og_title_match.group(1) if og_title_match else (title_match.group(1) if title_match else url)
                         desc = f" | Details: {og_desc_match.group(1)}" if og_desc_match else ""
-                        
                         title = re.sub(r'\s+', ' ', title).strip()
                         return f"[Shared Link Info - Title: '{title}{desc}']"
         except Exception as e:
@@ -379,6 +376,7 @@ class MarvinBot(discord.Client):
 
         context_text = clean_message
 
+        # Process URLs
         url_pattern = re.compile(r'https?://[^\s]+')
         found_urls = url_pattern.findall(clean_message)
         if found_urls:
@@ -389,18 +387,21 @@ class MarvinBot(discord.Client):
             if url_summaries:
                 context_text = f"{context_text} " + " ".join(url_summaries)
  
+        # Robust Attachment & Embed Vision Processing
+        attachment_descriptions = []
+        
+        # Check standard attachments (files, videos, images uploaded directly)
         if message.attachments:
-            attachment_descriptions = []
             for attachment in message.attachments:
                 filename_lower = attachment.filename.lower()
                 is_image = any(filename_lower.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp', '.gif'])
                 is_video = any(filename_lower.endswith(ext) for ext in ['.mp4', '.mov', '.webm', '.avi', '.mkv'])
 
-                if is_image or is_video:
+                if is_image or is_video or attachment.content_type and ('image' in attachment.content_type or 'video' in attachment.content_type):
                     try:
                         media_bytes = await attachment.read()
                         mime = attachment.content_type or ("video/mp4" if is_video else "image/jpeg")
-                        prompt_text = "Describe this video concisely so a 12-year-old boy can understand what happens in it." if is_video else "Describe this image concisely so a 12-year-old boy can understand what is in it."
+                        prompt_text = "Describe this video clip concisely so a 12-year-old boy can understand what happens in it." if is_video else "Describe this image concisely so a 12-year-old boy can understand what is in it."
                         
                         vision_response = await asyncio.to_thread(
                             ai_client.models.generate_content,
@@ -414,14 +415,24 @@ class MarvinBot(discord.Client):
                             label = "video description" if is_video else "image description"
                             attachment_descriptions.append(f"[Attached {label}: {vision_response.text.strip()}]")
                     except Exception as e:
-                        print(f"Error processing media attachment: {e}")
+                        print(f"Error processing media attachment bytes: {e}")
                         attachment_descriptions.append(f"[attached file: {attachment.filename}]")
                 else:
                     attachment_descriptions.append(f"[attached file: {attachment.filename}]")
+
+        # Also check Discord Embeds (for rich mobile shares / video previews)
+        if message.embeds:
+            for embed in message.embeds:
+                if embed.title or embed.description:
+                    attachment_descriptions.append(f"[Embed Preview - Title: '{embed.title or ''}' | Desc: '{embed.description or ''}']")
+                if embed.image or embed.thumbnail:
+                    image_url = embed.image.url or embed.thumbnail.url
+                    if image_url:
+                        attachment_descriptions.append(f"[Embed Media Link: {image_url}]")
             
-            if attachment_descriptions:
-                attachment_text = " ".join(attachment_descriptions)
-                context_text = f"{context_text} {attachment_text}".strip()
+        if attachment_descriptions:
+            attachment_text = " ".join(attachment_descriptions)
+            context_text = f"{context_text} {attachment_text}".strip()
 
         self.add_context_message(
             message.channel.id,
@@ -458,8 +469,8 @@ class MarvinBot(discord.Client):
             return
  
         if not clean_message:
-            if message.attachments:
-                clean_message = "I attached a media file."
+            if message.attachments or message.embeds:
+                clean_message = "I shared a media file or video preview with you."
             else:
                 clean_message = "Hey Marvin!"
  
@@ -481,7 +492,7 @@ CURRENT SPEAKER: {speaker_name}
 CURRENT USER ID: {user_id_str}
 CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If an attached video or image description is provided in the message context, use it to "see" what was shared and talk about it like you're watching it right along with them! If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If a video, image description, or embed preview is included in the message context, use it to see what was shared and react to it directly! If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
 """.strip()
  
         async with message.channel.typing():
