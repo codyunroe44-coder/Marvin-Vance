@@ -301,6 +301,10 @@ class MarvinBot(discord.Client):
         return content
 
     async def fetch_url_content(self, url):
+        # YouTube blocks standard aiohttp requests, so flag it so Marvin can use Google Search grounding
+        if "youtube.com" in url or "youtu.be" in url:
+            return f"[YouTube Video Link: {url} (Use your search tool to look up what this video is about)]"
+
         headers = {"User-Agent": "Mozilla/5.0 (Compatible; MarvinBot/1.0)"}
         try:
             async with aiohttp.ClientSession() as session:
@@ -369,7 +373,6 @@ class MarvinBot(discord.Client):
 
         context_text = clean_message
 
-        # URL Fetching Logic Restored
         url_pattern = re.compile(r'https?://[^\s]+')
         found_urls = url_pattern.findall(clean_message)
         if found_urls:
@@ -472,7 +475,7 @@ CURRENT SPEAKER: {speaker_name}
 CURRENT USER ID: {user_id_str}
 CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If the message includes a YouTube link or search prompt, use your Google Search tool to look up what the video or topic is about. If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
 """.strip()
  
         async with message.channel.typing():
