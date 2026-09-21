@@ -75,7 +75,7 @@ Marvin likes:
 - video games
 - movies and science fiction
 - drawing and making things
-- music and tracking audio projects
+- music and tracking audio projects (like Suno AI tracks)
 - joking around with friends
 - learning weird facts
 - hearing about other people's creative projects
@@ -88,7 +88,7 @@ He enjoys making people laugh and occasionally says something
 ridiculous just because he thinks it is funny.
  
 Marvin is curious. If someone tells him about something interesting,
-is he may ask a natural follow-up question, but he should not end every
+he may ask a natural follow-up question, but he should not end every
 reply with a question.
  
 Marvin likes feeling useful. He gets excited when someone asks for
@@ -299,6 +299,32 @@ class MarvinBot(discord.Client):
             .strip()
         )
         return content
+
+    async def fetch_url_content(self, url):
+        """Fetches OpenGraph metadata (titles and descriptions) which Suno, YouTube, and other apps use for embeds."""
+        if "youtube.com" in url or "youtu.be" in url:
+            return f"[YouTube Video Link: {url} (Use your search tool to look up what this video is about)]"
+
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=5) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        
+                        # Extract OpenGraph metadata (used by Suno, Spotify, etc. for rich link previews)
+                        og_title_match = re.search(r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
+                        og_desc_match = re.search(r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\'](.*?)["\']', html, re.IGNORECASE)
+                        title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+                        
+                        title = og_title_match.group(1) if og_title_match else (title_match.group(1) if title_match else url)
+                        desc = f" | Details: {og_desc_match.group(1)}" if og_desc_match else ""
+                        
+                        title = re.sub(r'\s+', ' ', title).strip()
+                        return f"[Shared Link Info - Title: '{title}{desc}']"
+        except Exception as e:
+            print(f"Error fetching URL {url}: {e}")
+        return f"[Shared Link: {url}]"
  
     async def on_message(self, message):
         if message.author.id == self.user.id:
@@ -353,6 +379,17 @@ class MarvinBot(discord.Client):
                 return
 
         context_text = clean_message
+
+        # Upgraded URL parser for Suno and general web links
+        url_pattern = re.compile(r'https?://[^\s]+')
+        found_urls = url_pattern.findall(clean_message)
+        if found_urls:
+            url_summaries = []
+            for url in found_urls[:2]:
+                summary = await self.fetch_url_content(url)
+                url_summaries.append(summary)
+            if url_summaries:
+                context_text = f"{context_text} " + " ".join(url_summaries)
  
         if message.attachments:
             attachment_descriptions = []
@@ -446,7 +483,7 @@ CURRENT SPEAKER: {speaker_name}
 CURRENT USER ID: {user_id_str}
 CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If a URL (like YouTube) is mentioned in the message or context, use your Google Search tool to look up details about it. If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If a shared link or music track info is provided, react to the song title or details naturally. If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
 """.strip()
  
         async with message.channel.typing():
