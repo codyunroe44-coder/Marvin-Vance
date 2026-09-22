@@ -37,7 +37,7 @@ def load_memory_chip():
             print(f"Error reading memory chip: {e}")
     
     print("No existing memory chip found. Initializing a fresh one.")
-    default_data = {"core_memories": [], "user_notes": {}}
+    default_data = {"core_memories": [], "user_notes": {}, "pending_memory": None}
     save_memory_chip(default_data)
     return default_data
 
@@ -161,14 +161,16 @@ class MarvinBot(discord.Client):
         self.chats = {}
         self.channel_context = {}
         self.active_sessions = {}
-        self.memory_chip = {"core_memories": [], "user_notes": {}}
+        self.memory_chip = {"core_memories": [], "user_notes": {}, "pending_memory": None}
  
     async def on_ready(self):
         self.memory_chip = load_memory_chip()
+        if "pending_memory" not in self.memory_chip:
+            self.memory_chip["pending_memory"] = None
         print("========================================")
         print(f"Logged in as {self.user}")
         print(f"Bot ID: {self.user.id}")
-        print("Marvin is online, memory chip loaded safely!")
+        print("Marvin is online, remember-with-approval system ready!")
         print("========================================")
  
     def get_chat(self, user_id):
@@ -216,17 +218,26 @@ class MarvinBot(discord.Client):
             return "No prior permanent memories recorded for this user."
         return "\n".join(memory_lines)
 
-    def update_user_memory(self, user_id_str, new_fact):
-        """Automatically syncs and saves a new fact about a user globally to the memory chip."""
+    def commit_pending_memory(self):
+        """Saves the pending memory into the actual chip storage."""
+        pending = self.memory_chip.get("pending_memory")
+        if not pending:
+            return None
+        
+        user_id_str = pending["user_id"]
+        fact = pending["fact"]
+        
         if "user_notes" not in self.memory_chip:
             self.memory_chip["user_notes"] = {}
-            
         if user_id_str not in self.memory_chip["user_notes"]:
             self.memory_chip["user_notes"][user_id_str] = []
             
-        if new_fact not in self.memory_chip["user_notes"][user_id_str]:
-            self.memory_chip["user_notes"][user_id_str].append(new_fact)
-            save_memory_chip(self.memory_chip)
+        if fact not in self.memory_chip["user_notes"][user_id_str]:
+            self.memory_chip["user_notes"][user_id_str].append(fact)
+            
+        self.memory_chip["pending_memory"] = None
+        save_memory_chip(self.memory_chip)
+        return fact
  
     def build_recent_context(self, channel_id, exclude_last=False):
         buffer = list(self.get_context_buffer(channel_id))
@@ -350,7 +361,7 @@ class MarvinBot(discord.Client):
                     await message.reply("Marvin online in the shared link! 🚀 (25 message limit engaged)", mention_author=False)
                     return
                 else:
-                    await message.reply("Nice try, but only Fire Phoenix or Kandric can engage my circuits here! 🤖", mention_author=False)
+                    await message.reply("Nice try, but only Fire Phoenix or Kandric may engage my circuits here! 🤖", mention_author=False)
                     return
 
             elif cmd == "!marvin_continue":
@@ -374,6 +385,52 @@ class MarvinBot(discord.Client):
             if not self.has_active_session(message.channel.id):
                 return
 
+        # ==========================================================
+        # MEMORY COMMANDS (!remember, !approve, !deny)
+        # ==========================================================
+        lower_content = clean_message.lower()
+
+        if lower_content.startswith("!remember "):
+            fact_to_propose = clean_message[10:].strip()
+            if fact_to_propose:
+                self.memory_chip["pending_memory"] = {
+                    "user_id": user_id_str,
+                    "speaker": speaker_name,
+                    "fact": fact_to_propose
+                }
+                save_memory_chip(self.memory_chip)
+                await message.reply(
+                    f"🧠 Hey Fire Phoenix! {speaker_name} wants me to remember: *\"{fact_to_propose}\"*. Do I have your approval to log this to my memory chip? (Reply with `!approve` or `!deny`)",
+                    mention_author=False
+                )
+                return
+
+        elif lower_content == "!approve":
+            if is_owner:
+                pending = self.memory_chip.get("pending_memory")
+                if pending:
+                    saved_fact = self.commit_pending_memory()
+                    await message.reply(f"💾 Approved! Locked that into my core memory files for {pending['speaker']}: *\"{saved_fact}\"*", mention_author=False)
+                else:
+                    await message.reply("⚠️ There are no pending memory proposals waiting for approval right now.", mention_author=False)
+                return
+            else:
+                await message.reply("🚫 Nice try, but only Fire Phoenix has the clearance to approve memory additions!", mention_author=False)
+                return
+
+        elif lower_content == "!deny":
+            if is_owner:
+                if self.memory_chip.get("pending_memory"):
+                    self.memory_chip["pending_memory"] = None
+                    save_memory_chip(self.memory_chip)
+                    await message.reply("🗑️ Memory proposal denied and discarded. Leaving the chip alone!", mention_author=False)
+                else:
+                    await message.reply("⚠️ No pending memory proposals to deny.", mention_author=False)
+                return
+            else:
+                await message.reply("🚫 You don't have clearance to alter my memory chip settings!", mention_author=False)
+                return
+
         context_text = clean_message
 
         # Process URLs
@@ -390,7 +447,6 @@ class MarvinBot(discord.Client):
         # Robust Attachment & Embed Vision Processing
         attachment_descriptions = []
         
-        # Check standard attachments (files, videos, images uploaded directly)
         if message.attachments:
             for attachment in message.attachments:
                 filename_lower = attachment.filename.lower()
@@ -420,7 +476,6 @@ class MarvinBot(discord.Client):
                 else:
                     attachment_descriptions.append(f"[attached file: {attachment.filename}]")
 
-        # Also check Discord Embeds (for rich mobile shares / video previews)
         if message.embeds:
             for embed in message.embeds:
                 if embed.title or embed.description:
@@ -492,7 +547,7 @@ CURRENT SPEAKER: {speaker_name}
 CURRENT USER ID: {user_id_str}
 CURRENT MESSAGE: {clean_message}
  
-Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If a video, image description, or embed preview is included in the message context, use it to see what was shared and react to it directly! If the speaker shares an important permanent fact about themselves that you should remember across servers, include an auto-memory tag at the very end of your response like this: [AUTO_MEMORY: {user_id_str} | fact to remember].
+Reply naturally to the current speaker as Marvin. Keep the reply conversational and concise. If a video, image description, or embed preview is included in the message context, use it to see what was shared and react to it directly!
 """.strip()
  
         async with message.channel.typing():
@@ -523,14 +578,6 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
  
                 if not reply_text:
                     reply_text = "Uh... my brain just went blank."
-
-                # Automatically extract and save memories if Marvin includes the tag
-                auto_mem_match = re.search(r'\[AUTO_MEMORY:\s*(\d+)\s*\|\s*(.*?)\]', reply_text, re.IGNORECASE)
-                if auto_mem_match:
-                    target_user_id = auto_mem_match.group(1).strip()
-                    extracted_fact = auto_mem_match.group(2).strip()
-                    self.update_user_memory(target_user_id, extracted_fact)
-                    reply_text = re.sub(r'\[AUTO_MEMORY:\s*\d+\s*\|\s*.*?\]', '', reply_text).strip()
  
                 self.add_context_message(
                     message.channel.id,
