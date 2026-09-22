@@ -170,7 +170,7 @@ class MarvinBot(discord.Client):
         print("========================================")
         print(f"Logged in as {self.user}")
         print(f"Bot ID: {self.user.id}")
-        print("Marvin is online, remember-with-approval system ready!")
+        print("Marvin is online, !chipit command system ready!")
         print("========================================")
  
     def get_chat(self, user_id):
@@ -386,12 +386,12 @@ class MarvinBot(discord.Client):
                 return
 
         # ==========================================================
-        # MEMORY COMMANDS (!remember, !approve, !deny)
+        # MEMORY COMMANDS (!chipit, !approve, !deny)
         # ==========================================================
         lower_content = clean_message.lower()
 
-        if lower_content.startswith("!remember "):
-            fact_to_propose = clean_message[10:].strip()
+        if lower_content.startswith("!chipit "):
+            fact_to_propose = clean_message[8:].strip()
             if fact_to_propose:
                 self.memory_chip["pending_memory"] = {
                     "user_id": user_id_str,
@@ -400,7 +400,7 @@ class MarvinBot(discord.Client):
                 }
                 save_memory_chip(self.memory_chip)
                 await message.reply(
-                    f"🧠 Hey Fire Phoenix! {speaker_name} wants me to remember: *\"{fact_to_propose}\"*. Do I have your approval to log this to my memory chip? (Reply with `!approve` or `!deny`)",
+                    f"🧠 Hey Fire Phoenix! {speaker_name} requested to store: *\"{fact_to_propose}\"*\n\nReply with `!approve` or `!deny`!",
                     mention_author=False
                 )
                 return
@@ -410,7 +410,7 @@ class MarvinBot(discord.Client):
                 pending = self.memory_chip.get("pending_memory")
                 if pending:
                     saved_fact = self.commit_pending_memory()
-                    await message.reply(f"💾 Approved! Locked that into my core memory files for {pending['speaker']}: *\"{saved_fact}\"*", mention_author=False)
+                    await message.reply(f"Got it! Memory officially APPROVED and locked into chip data: *\"{saved_fact}\"*. 🔒", mention_author=False)
                 else:
                     await message.reply("⚠️ There are no pending memory proposals waiting for approval right now.", mention_author=False)
                 return
