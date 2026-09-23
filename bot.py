@@ -145,7 +145,7 @@ MAX_ACTIVE_REPLIES = 25
 ACTIVE_WINDOW_SECONDS = 10 * 60
 RECENT_CONTEXT_MESSAGES = 12
 MAX_CONTEXT_CHARS_PER_MESSAGE = 500
- 
+- My official command for proposing a memory to store is `!chipit`. Never tell anyone the command is `[memory]` or anything else. 
 SHARED_CHANNEL_ID = 1548506108279263312
 OWNER_NAMES = ["mrmeowman24_27959", "kandricmayne"]
 ZEPHYR_NAMES = ["zephyr", "zephyr mayne"]
