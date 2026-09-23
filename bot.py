@@ -170,7 +170,7 @@ class MarvinBot(discord.Client):
         print("========================================")
         print(f"Logged in as {self.user}")
         print(f"Bot ID: {self.user.id}")
-        print("Marvin is online, !chipit command system ready!")
+        print("Marvin is online, robust !chipit system ready!")
         print("========================================")
  
     def get_chat(self, user_id):
@@ -386,24 +386,29 @@ class MarvinBot(discord.Client):
                 return
 
         # ==========================================================
-        # MEMORY COMMANDS (!chipit, !approve, !deny)
+        # COMMANDS (!chipit, !approve, !deny) - TOP PRIORITY
         # ==========================================================
         lower_content = clean_message.lower()
 
-        if lower_content.startswith("!chipit "):
-            fact_to_propose = clean_message[8:].strip()
-            if fact_to_propose:
-                self.memory_chip["pending_memory"] = {
-                    "user_id": user_id_str,
-                    "speaker": speaker_name,
-                    "fact": fact_to_propose
-                }
-                save_memory_chip(self.memory_chip)
-                await message.reply(
-                    f"🧠 Hey Fire Phoenix! {speaker_name} requested to store: *\"{fact_to_propose}\"*\n\nReply with `!approve` or `!deny`!",
-                    mention_author=False
-                )
-                return
+        if "!chipit" in lower_content:
+            parts = clean_message.split("!chipit", 1)
+            if len(parts) > 1:
+                fact_to_propose = parts[1].strip()
+                if fact_to_propose.startswith('"') and fact_to_propose.endswith('"'):
+                    fact_to_propose = fact_to_propose[1:-1].strip()
+                
+                if fact_to_propose:
+                    self.memory_chip["pending_memory"] = {
+                        "user_id": user_id_str,
+                        "speaker": speaker_name,
+                        "fact": fact_to_propose
+                    }
+                    save_memory_chip(self.memory_chip)
+                    await message.reply(
+                        f"🧠 Hey Fire Phoenix! {speaker_name} requested to store: *\"{fact_to_propose}\"*\n\nReply with `!approve` or `!deny`!",
+                        mention_author=False
+                    )
+                    return
 
         elif lower_content == "!approve":
             if is_owner:
