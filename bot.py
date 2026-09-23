@@ -408,7 +408,7 @@ class MarvinBot(discord.Client):
                     }
                     save_memory_chip(self.memory_chip)
                     await message.reply(
-                        f"🧠 Hey Fire Phoenix! {speaker_name} requested to store: *\"{fact_to_propose}\"*\n\nReply with `!approve` or `!deny`!",
+                        f"🧠 Hey <@{message.author.id}>! You requested to store: *\"{fact_to_propose}\"*\n\nReply with `!approve` or `!deny`!",
                         mention_author=False
                     )
                     return
