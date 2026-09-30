@@ -420,7 +420,7 @@ class MarvinBot(discord.Client):
                     saved_fact = self.commit_pending_memory()
                     await message.reply(f"Got it! Memory officially APPROVED and locked into chip data: *\"{saved_fact}\"*. 🔒", mention_author=False)
                 else:
-                    await message.reply("⚠️ There are no pending memory proposals waiting for approval right now.", mention_author=False)
+                    await message.reply("⚠️️ There are no pending memory proposals waiting for approval right now.", mention_author=False)
                 return
             else:
                 await message.reply("🚫 Nice try, but only Fire Phoenix has the clearance to approve memory additions!", mention_author=False)
@@ -514,8 +514,12 @@ class MarvinBot(discord.Client):
         explicit_wake = is_mentioned or is_reply
  
         if is_shared_channel:
-            if is_owner and not explicit_wake:
-                return
+            if is_owner:
+                mentions_name_naturally = "marvin" in clean_message.lower()
+                if not explicit_wake and not mentions_name_naturally:
+                    return
+                else:
+                    explicit_wake = True
             if is_zephyr:
                 explicit_wake = True
 
