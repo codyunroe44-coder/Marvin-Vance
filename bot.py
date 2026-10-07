@@ -64,7 +64,7 @@ class MemoryApprovalView(discord.ui.View):
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="marvin_approve_memory")
     async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Security check: Ensure only you can click it
+        # Security check: Ensure only Cody can click it
         if interaction.user.id != OWNER_DISCORD_ID:
             await interaction.response.send_message("Nice try! Only Cody has the master key to approve my memories.", ephemeral=True)
             return
@@ -88,7 +88,7 @@ class MemoryApprovalView(discord.ui.View):
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, custom_id="marvin_deny_memory")
     async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Security check: Ensure only you can click it
+        # Security check: Ensure only Cody can click it
         if interaction.user.id != OWNER_DISCORD_ID:
             await interaction.response.send_message("🚫 You don't have clearance to alter my memory chip settings!", ephemeral=True)
             return
@@ -236,7 +236,7 @@ class MarvinBot(discord.Client):
         print("========================================")
         print(f"Logged in as {self.user}")
         print(f"Bot ID: {self.user.id}")
-        print("Marvin is online, interactive buttons locked to Cody!")
+        print("Marvin is online, button alerts locked to Cody!")
         print("========================================")
 
     def get_chat(self, user_id):
@@ -452,7 +452,7 @@ class MarvinBot(discord.Client):
                 return
 
         # ==========================================================
-        # COMMAND (!chipit with Interactive Buttons)
+        # COMMAND (!chipit with Alert Ping & Interactive Buttons)
         # ==========================================================
         lower_content = clean_message.lower()
 
@@ -471,10 +471,12 @@ class MarvinBot(discord.Client):
                     }
                     save_memory_chip(self.memory_chip)
 
-                    # Attach buttons view
+                    # Attach buttons view and ping Cody directly
                     view = MemoryApprovalView(self)
                     await message.reply(
-                        f"🧠 Hey <@{message.author.id}> requested to store: *\"{fact_to_propose}\"*\n\nWaiting for owner approval...",
+                        f"🚨 <@{OWNER_DISCORD_ID}> **Memory Proposal Alert!**\n"
+                        f"@{speaker_name} wants to store: *\"{fact_to_propose}\"*\n\n"
+                        f"Waiting for Cody's approval. Click a button below:",
                         view=view,
                         mention_author=False
                     )
