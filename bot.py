@@ -23,34 +23,35 @@ MODEL_NAME = "gemini-3.6-flash"
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-CHIP_FILE = "memory_chip.json"
+# POINTED TO YOUR NEW REPOSITORY FILE
+CHIP_FILE = "memories.json"
 
 # LOCKED TO YOUR DISCORD ID
 OWNER_DISCORD_ID = 1429408267767124088
 
 def load_memory_chip():
-    """Reads existing data from the memory chip, or creates a blank one ONLY if it doesn't exist."""
+    """Reads existing data from the memories.json file, or initializes a fresh one."""
     if os.path.exists(CHIP_FILE):
         try:
             with open(CHIP_FILE, "r") as f:
                 data = json.load(f)
-                print(f"Memory chip loaded successfully! Found {len(data.get('user_notes', {}))} user records.")
+                print(f"Memories vault loaded successfully! Found {len(data.get('approved_vault', []))} approved memories.")
                 return data
         except Exception as e:
-            print(f"Error reading memory chip: {e}")
+            print(f"Error reading memories vault: {e}")
     
-    print("No existing memory chip found. Initializing a fresh one.")
-    default_data = {"core_memories": [], "user_notes": {}, "pending_memory": None}
+    print("No existing memories vault found. Initializing a fresh one.")
+    default_data = {"core_memories": [], "user_notes": {}, "pending_memory": None, "approved_vault": []}
     save_memory_chip(default_data)
     return default_data
 
 def save_memory_chip(data):
-    """Writes updated data back to the memory chip file safely."""
+    """Writes updated data back to the memories.json file safely."""
     try:
         with open(CHIP_FILE, "w") as f:
             json.dump(data, f, indent=4)
     except Exception as e:
-        print(f"Error writing to memory chip: {e}")
+        print(f"Error writing to memories vault: {e}")
 
 
 # ==========================================================
@@ -74,7 +75,7 @@ class MemoryApprovalView(discord.ui.View):
             await interaction.response.edit_message(content="⚠️ There are no pending memory proposals waiting for approval right now.", view=None)
             return
 
-        # Commit memory
+        # Commit memory to approved_vault and user_notes
         saved_fact = self.bot_instance.commit_pending_memory()
 
         # Disable buttons and update message
@@ -82,7 +83,7 @@ class MemoryApprovalView(discord.ui.View):
             child.disabled = True
 
         await interaction.response.edit_message(
-            content=f"🧠 Memory officially APPROVED and locked into chip data: *\"{saved_fact}\"*. 🔒",
+            content=f"🧠 Memory officially APPROVED and locked into `memories.json`: *\"{saved_fact}\"*. 🔒",
             view=self
         )
 
@@ -105,7 +106,7 @@ class MemoryApprovalView(discord.ui.View):
             child.disabled = True
 
         await interaction.response.edit_message(
-            content="🗑️ Memory proposal denied and discarded. Leaving the chip alone!",
+            content="🗑️ Memory proposal denied and discarded. Leaving the vault alone!",
             view=self
         )
 
@@ -224,7 +225,7 @@ class MarvinBot(discord.Client):
         self.chats = {}
         self.channel_context = {}
         self.active_sessions = {}
-        self.memory_chip = {"core_memories": [], "user_notes": {}, "pending_memory": None}
+        self.memory_chip = {"core_memories": [], "user_notes": {}, "pending_memory": None, "approved_vault": []}
 
     async def setup_hook(self):
         self.add_view(MemoryApprovalView(self))
@@ -233,10 +234,12 @@ class MarvinBot(discord.Client):
         self.memory_chip = load_memory_chip()
         if "pending_memory" not in self.memory_chip:
             self.memory_chip["pending_memory"] = None
+        if "approved_vault" not in self.memory_chip:
+            self.memory_chip["approved_vault"] = []
         print("========================================")
         print(f"Logged in as {self.user}")
         print(f"Bot ID: {self.user.id}")
-        print("Marvin is online, button alerts locked to Cody!")
+        print("Marvin is online, memories vault linked to memories.json!")
         print("========================================")
 
     def get_chat(self, user_id):
@@ -271,12 +274,15 @@ class MarvinBot(discord.Client):
         """Pulls saved permanent notes/memories for this user from the memory chip."""
         user_notes = self.memory_chip.get("user_notes", {})
         core_memories = self.memory_chip.get("core_memories", [])
+        approved_vault = self.memory_chip.get("approved_vault", [])
         
         specific_notes = user_notes.get(user_id_str, [])
         
         memory_lines = []
         if core_memories:
             memory_lines.append(f"Core Memories: {json.dumps(core_memories)}")
+        if approved_vault:
+            memory_lines.append(f"Approved Vault Memories: {json.dumps(approved_vault)}")
         if specific_notes:
             memory_lines.append(f"Notes about {speaker_name}: {json.dumps(specific_notes)}")
             
@@ -285,7 +291,7 @@ class MarvinBot(discord.Client):
         return "\n".join(memory_lines)
 
     def commit_pending_memory(self):
-        """Saves the pending memory into the actual chip storage."""
+        """Saves the pending memory into the approved_vault and user_notes."""
         pending = self.memory_chip.get("pending_memory")
         if not pending:
             return None
@@ -293,11 +299,15 @@ class MarvinBot(discord.Client):
         user_id_str = pending["user_id"]
         fact = pending["fact"]
         
+        if "approved_vault" not in self.memory_chip:
+            self.memory_chip["approved_vault"] = []
+        if fact not in self.memory_chip["approved_vault"]:
+            self.memory_chip["approved_vault"].append(fact)
+        
         if "user_notes" not in self.memory_chip:
             self.memory_chip["user_notes"] = {}
         if user_id_str not in self.memory_chip["user_notes"]:
             self.memory_chip["user_notes"][user_id_str] = []
-            
         if fact not in self.memory_chip["user_notes"][user_id_str]:
             self.memory_chip["user_notes"][user_id_str].append(fact)
             
