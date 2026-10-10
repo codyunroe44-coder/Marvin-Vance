@@ -241,7 +241,7 @@ class MarvinBot(discord.Client):
         print("========================================")
         print(f"Logged in as {self.user}")
         print(f"Bot ID: {self.user.id}")
-        print("Marvin is online, multi-admin memory approvals active!")
+        print("Marvin is online, multi-admin pings active!")
         print("========================================")
 
     def get_chat(self, user_id):
@@ -464,7 +464,7 @@ class MarvinBot(discord.Client):
                 return
 
         # ==========================================================
-        # COMMAND (!chipit with Alert Ping & Interactive Buttons)
+        # COMMAND (!chipit with Dual-Admin Ping & Interactive Buttons)
         # ==========================================================
         lower_content = clean_message.lower()
 
@@ -483,10 +483,10 @@ class MarvinBot(discord.Client):
                     }
                     save_memory_chip(self.memory_chip)
 
-                    # Attach buttons view and ping Cody directly
+                    # Attach buttons view and ping BOTH admins directly
                     view = MemoryApprovalView(self)
                     await message.reply(
-                        f"🚨 <@{OWNER_DISCORD_ID}> **Memory Proposal Alert!**\n"
+                        f"🚨 <@{OWNER_DISCORD_ID}> <@{CO_OWNER_DISCORD_ID}> **Memory Proposal Alert!**\n"
                         f"@{speaker_name} wants to store: *\"{fact_to_propose}\"*\n\n"
                         f"Waiting for approval. Click a button below:",
                         view=view,
