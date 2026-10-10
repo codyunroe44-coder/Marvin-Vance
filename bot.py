@@ -23,11 +23,13 @@ MODEL_NAME = "gemini-3.6-flash"
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# POINTED TO YOUR NEW REPOSITORY FILE
+# POINTED TO YOUR REPOSITORY FILE
 CHIP_FILE = "memories.json"
 
-# LOCKED TO YOUR DISCORD ID
+# AUTHORIZED DISCORD IDS (Cody + Co-Owner)
 OWNER_DISCORD_ID = 1429408267767124088
+CO_OWNER_DISCORD_ID = 562275970103509014
+AUTHORIZED_APPROVERS = [OWNER_DISCORD_ID, CO_OWNER_DISCORD_ID]
 
 def load_memory_chip():
     """Reads existing data from the memories.json file, or initializes a fresh one."""
@@ -65,9 +67,9 @@ class MemoryApprovalView(discord.ui.View):
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="marvin_approve_memory")
     async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Security check: Ensure only Cody can click it
-        if interaction.user.id != OWNER_DISCORD_ID:
-            await interaction.response.send_message("Nice try! Only Cody has the master key to approve my memories.", ephemeral=True)
+        # Security check: Ensure only Cody or the co-owner can click it
+        if interaction.user.id not in AUTHORIZED_APPROVERS:
+            await interaction.response.send_message("Nice try! Only authorized administrators have the master key to approve my memories.", ephemeral=True)
             return
 
         pending = self.bot_instance.memory_chip.get("pending_memory")
@@ -83,14 +85,14 @@ class MemoryApprovalView(discord.ui.View):
             child.disabled = True
 
         await interaction.response.edit_message(
-            content=f"🧠 Memory officially APPROVED and locked into `memories.json`: *\"{saved_fact}\"*. 🔒",
+            content=f"🧠 Memory officially APPROVED by <@{interaction.user.id}> and locked into `memories.json`: *\"{saved_fact}\"*. 🔒",
             view=self
         )
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, custom_id="marvin_deny_memory")
     async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Security check: Ensure only Cody can click it
-        if interaction.user.id != OWNER_DISCORD_ID:
+        # Security check: Ensure only Cody or the co-owner can click it
+        if interaction.user.id not in AUTHORIZED_APPROVERS:
             await interaction.response.send_message("🚫 You don't have clearance to alter my memory chip settings!", ephemeral=True)
             return
 
@@ -106,7 +108,7 @@ class MemoryApprovalView(discord.ui.View):
             child.disabled = True
 
         await interaction.response.edit_message(
-            content="🗑️ Memory proposal denied and discarded. Leaving the vault alone!",
+            content=f"🗑️ Memory proposal denied by <@{interaction.user.id}> and discarded. Leaving the vault alone!",
             view=self
         )
 
@@ -239,7 +241,7 @@ class MarvinBot(discord.Client):
         print("========================================")
         print(f"Logged in as {self.user}")
         print(f"Bot ID: {self.user.id}")
-        print("Marvin is online, memories vault linked to memories.json!")
+        print("Marvin is online, multi-admin memory approvals active!")
         print("========================================")
 
     def get_chat(self, user_id):
@@ -486,7 +488,7 @@ class MarvinBot(discord.Client):
                     await message.reply(
                         f"🚨 <@{OWNER_DISCORD_ID}> **Memory Proposal Alert!**\n"
                         f"@{speaker_name} wants to store: *\"{fact_to_propose}\"*\n\n"
-                        f"Waiting for Cody's approval. Click a button below:",
+                        f"Waiting for approval. Click a button below:",
                         view=view,
                         mention_author=False
                     )
