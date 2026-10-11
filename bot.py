@@ -162,8 +162,23 @@ async def chipit(ctx, *, content: str):
             content, vector_str
         )
     await ctx.send(f"Memory locked in right into my chips, {ctx.author.mention}!")
+@bot.event
+async def on_message(message):
+    if message.author == bot.user:
+        return
 
-@chipit.error
+    # ---> ADD THIS BLOCK HERE <---
+    # Completely ignore this specific channel
+    if message.channel.id == 1502674164526350398:
+        return
+    # -----------------------------
+
+    # Process commands first
+    await bot.process_commands(message)
+
+    if not message.content.startswith("!"):
+        # Check if message is in our special restricted channel
+        ...@chipit.error
 async def chipit_error(ctx, error):
     if isinstance(error, commands.CommandOnCooldown):
         await ctx.send(f"Whoa there! Slow down. Try again in {error.retry_after:.1f} seconds.", delete_after=5)
