@@ -95,7 +95,7 @@ async def on_message(message):
             full_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
             
             response = ai_client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.8-flash',
                 contents=full_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
