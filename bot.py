@@ -267,7 +267,7 @@ async def on_message(message):
     clean_content = message.content.replace(f"<@!{bot.user.id}>", "").replace(f"<@{bot.user.id}>", "").strip()
     
     # Intercept !chipit immediately
-    if clean_content.lower().startswith("!chipit"):
+    if message.content.lower().startswith("!chipit"):
         await bot.process_commands(message)
         return
 
@@ -305,7 +305,7 @@ async def on_message(message):
                 await message.reply("Error: You don't have clearance to lock down my system! 🚫", mention_author=False)
                 return
 
-        # If not active in Zephyr's channel, ignore unless mentioned/replied to
+        # If not active in Zephyr's channel, ignore unless mentioned
         if not state.has_active_session(message.channel.id):
             is_mentioned = bot.user in message.mentions
             if not is_mentioned:
@@ -332,7 +332,6 @@ async def on_message(message):
         except Exception:
             pass
 
-    # In regular channels, he is responsive to you (owner) and Zephyr naturally
     should_respond = is_dm or is_mentioned or is_reply_to_me or is_owner or is_zephyr or is_shared_channel
 
     if not should_respond:
@@ -387,14 +386,13 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
 
 
 @bot.command(name="chipit")
-async def chipit(ctx, *, memory_text: str = ""):
+async def chipit(ctx, *, memory_text: str = None):
     """Manually submit a specific fact or memory to be reviewed and approved via !chipit."""
+    print(f"DEBUG: !chipit command triggered by {ctx.author} with text: {memory_text}")
+    
     if ctx.author.id not in AUTHORIZED_APPROVERS:
         await ctx.send("Nice try! Only authorized administrators have the master key to approve my memories.", delete_after=5)
         return
-
-    if memory_text.lower().startswith("!chipit"):
-        memory_text = memory_text[7:].strip()
 
     if not memory_text:
         await ctx.send("⚠️ Please provide something to chip! Example: `!chipit Fire Phoenix is Digidad`", delete_after=5)
@@ -402,27 +400,33 @@ async def chipit(ctx, *, memory_text: str = ""):
 
     approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
     if not approval_channel:
-        await ctx.send("Could not find the designated approval channel.")
+        print(f"ERROR: Could not find approval channel with ID {APPROVAL_CHANNEL_ID}")
+        await ctx.send("Could not find the designated approval channel.", delete_after=5)
         return
 
-    if memory_text.startswith('"') and memory_text.endswith('"'):
-        memory_text = memory_text[1:-1].strip()
+    clean_text = memory_text.strip()
+    if clean_text.startswith('"') and clean_text.endswith('"'):
+        clean_text = clean_text[1:-1].strip()
 
     embed = discord.Embed(
         title="📝 Manual Memory Proposal",
-        description=memory_text,
+        description=clean_text,
         color=discord.Color.gold()
     )
-    view = MemoryApprovalView(memory_content=memory_text, speaker=str(ctx.author))
+    view = MemoryApprovalView(memory_content=clean_text, speaker=str(ctx.author))
     
-    await approval_channel.send(
-        f"🚨 <@{OWNER_DISCORD_ID}> **Memory Proposal Alert!**\n"
-        f"@{ctx.author.display_name} wants to store: *\"{memory_text}\"*\n\n"
-        f"Waiting for approval. Click a button below:",
-        embed=embed,
-        view=view
-    )
-    await ctx.send("Memory submitted for review and approval in the log channel!", delete_after=5)
+    try:
+        await approval_channel.send(
+            f"🚨 <@{OWNER_DISCORD_ID}> **Memory Proposal Alert!**\n"
+            f"@{ctx.author.display_name} wants to store: *\"{clean_text}\"*\n\n"
+            f"Waiting for approval. Click a button below:",
+            embed=embed,
+            view=view
+        )
+        await ctx.send("Memory submitted for review and approval in the log channel!", delete_after=5)
+    except Exception as e:
+        print(f"ERROR sending approval embed: {e}")
+        await ctx.send(f"Error posting to approval channel: {e}", delete_after=5)
 
 
 if __name__ == "__main__":
