@@ -62,7 +62,7 @@ async def on_message(message):
     if not message.content.startswith("!"):
         try:
             model = genai.GenerativeModel(
-                model_name="gemini-flash-latest",
+                model_name="gemini-3.8-flash",
                 system_instruction=SYSTEM_INSTRUCTION
             )
             
