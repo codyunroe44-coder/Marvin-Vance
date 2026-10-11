@@ -144,17 +144,19 @@ class MemoryApprovalView(discord.ui.View):
             child.disabled = True
         await interaction.message.edit(view=self)
 
-        # Save into Neon with vector embedding generated via Voyage AI
+        # Save into Neon with vector embedding converted to string format for asyncpg
         try:
             conn = await get_db_connection()
             try:
                 vector = await generate_embedding(self.memory_content)
+                vector_str = str(vector)
+                
                 await conn.execute(
                     """
                     INSERT INTO marvin_episodes (speaker, content, embedding)
                     VALUES ($1, $2, $3);
                     """,
-                    self.speaker, self.memory_content, vector
+                    self.speaker, self.memory_content, vector_str
                 )
             finally:
                 await conn.close()
