@@ -266,7 +266,7 @@ async def on_message(message):
     speaker_name = getattr(message.author, "display_name", message.author.name)
     clean_content = message.content.replace(f"<@!{bot.user.id}>", "").replace(f"<@{bot.user.id}>", "").strip()
     
-    # Intercept !chipit immediately so normal chat logic doesn't trigger
+    # Intercept !chipit immediately
     if clean_content.lower().startswith("!chipit"):
         await bot.process_commands(message)
         return
@@ -275,7 +275,9 @@ async def on_message(message):
     is_owner = message.author.name.lower() in OWNER_NAMES or message.author.id == OWNER_DISCORD_ID
     is_zephyr = message.author.name.lower() in ZEPHYR_NAMES
 
-    # Handle shared channel control commands if in the designated channel
+    # ==========================================
+    # SHARED CHANNEL LOGIC (Zephyr's Channel)
+    # ==========================================
     if is_shared_channel:
         cmd = clean_content.lower()
         if cmd in ["!marvin_engage", "!start_marvin"]:
@@ -303,16 +305,21 @@ async def on_message(message):
                 await message.reply("Error: You don't have clearance to lock down my system! 🚫", mention_author=False)
                 return
 
+        # If not active in Zephyr's channel, ignore unless mentioned/replied to
         if not state.has_active_session(message.channel.id):
-            await bot.process_commands(message)
-            return
+            is_mentioned = bot.user in message.mentions
+            if not is_mentioned:
+                await bot.process_commands(message)
+                return
 
     await bot.process_commands(message)
 
     # Add to context buffer
     state.add_context_message(message.channel.id, speaker_name, clean_content)
 
-    # Determine if Marvin should reply
+    # ==========================================
+    # GENERAL CHANNEL RESPONSIVENESS
+    # ==========================================
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = bot.user in message.mentions
     
@@ -325,21 +332,10 @@ async def on_message(message):
         except Exception:
             pass
 
-    explicit_wake = is_mentioned or is_reply_to_me
+    # In regular channels, he is responsive to you (owner) and Zephyr naturally
+    should_respond = is_dm or is_mentioned or is_reply_to_me or is_owner or is_zephyr or is_shared_channel
 
-    if is_shared_channel:
-        if is_owner:
-            if "marvin" in clean_content.lower() or explicit_wake:
-                explicit_wake = True
-        if is_zephyr:
-            explicit_wake = True
-
-    active_followup = not is_dm and not explicit_wake and state.has_active_session(message.channel.id)
-
-    if not is_dm and not explicit_wake and not active_followup and not is_shared_channel:
-        return
-
-    if is_shared_channel and not explicit_wake and not state.has_active_session(message.channel.id):
+    if not should_respond:
         return
 
     if not clean_content:
