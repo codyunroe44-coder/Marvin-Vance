@@ -21,18 +21,16 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 DB_POOL = None
 
-# List of restricted channels where the bot will completely ignore messages
+# Restricted channels where the bot is completely blocked
 RESTRICTED_CHANNELS = [
     1502674164526350398,
-    # Add any other restricted channel IDs here as needed
 ]
 
-# State tracking for the 25-message active session limit
-active_session = {
-    "active": False,
-    "messages_remaining": 0,
-    "channel_id": None
-}
+# The specific channel ID that requires engagement/sleep/resume commands
+COMMAND_CHANNEL_ID = 1548506108279263312
+
+# State tracking for the command channel session (active or asleep)
+command_channel_active = False
 
 SYSTEM_INSTRUCTION = """
 You are Marvin Vance, a friendly, curious, and mischievous 13-year-old boy.
@@ -57,76 +55,87 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    global active_session
+    global command_channel_active
 
     if message.author == bot.user:
         return
 
-    # Completely ignore restricted channels
+    # 1. Completely ignore restricted channels
     if message.channel.id in RESTRICTED_CHANNELS:
+        return
+
+    # 2. If it's the special command channel, check if he is currently allowed to speak
+    if message.channel.id == COMMAND_CHANNEL_ID and not command_channel_active and not message.content.startswith("!"):
         return
 
     await bot.process_commands(message)
 
-    # Handle standard server chat messages under the 25-message active session limit
+    # Handle standard chat messages
     if not message.content.startswith("!"):
-        if active_session["active"] and active_session["channel_id"] == message.channel.id:
-            try:
-                context_memories = ""
-                if DB_POOL:
-                    try:
-                        user_embedding = await get_voyage_embedding(message.content)
-                        vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
-                        async with DB_POOL.acquire() as conn:
-                            rows = await conn.fetch(
-                                """
-                                SELECT content FROM marvin_episodes 
-                                ORDER BY embedding <=> $1::vector 
-                                LIMIT 3;
-                                """,
-                                vector_str
-                            )
-                            if rows:
-                                context_memories = "\nRetrieved Memories from Database:\n" + "\n".join([f"- {r['content']}" for r in rows])
-                    except Exception as e:
-                        print(f"Memory retrieval error: {e}")
+        try:
+            context_memories = ""
+            if DB_POOL:
+                try:
+                    user_embedding = await get_voyage_embedding(message.content)
+                    vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
+                    async with DB_POOL.acquire() as conn:
+                        rows = await conn.fetch(
+                            """
+                            SELECT content FROM marvin_episodes 
+                            ORDER BY embedding <=> $1::vector 
+                            LIMIT 3;
+                            """,
+                            vector_str
+                        )
+                        if rows:
+                            context_memories = "\nRetrieved Memories from Database:\n" + "\n".join([f"- {r['content']}" for r in rows])
+                except Exception as e:
+                    print(f"Memory retrieval error: {e}")
 
-                full_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
-                
-                response = ai_client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=full_prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_INSTRUCTION,
-                    ),
-                )
-                
-                if response and response.text:
-                    await message.channel.send(response.text)
-                    
-                    # Decrement active session counter
-                    active_session["messages_remaining"] -= 1
-                    if active_session["messages_remaining"] <= 0:
-                        active_session["active"] = False
-                        await message.channel.send("Beep boop... reached my 25-message limit, going back to sleep! Wake me up with `!marvin_engage` when you need me again.")
-            except Exception as e:
-                print(f"Gemini generation error: {e}")
+            full_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
+            
+            response = ai_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                ),
+            )
+            
+            if response and response.text:
+                await message.channel.send(response.text)
+        except Exception as e:
+            print(f"Gemini generation error: {e}")
 
 @bot.command(name="marvin_engage")
 async def marvin_engage(ctx):
-    """Boots up an active 25-message chat session in the current channel."""
-    global active_session
-    active_session["active"] = True
-    active_session["messages_remaining"] = 25
-    active_session["channel_id"] = ctx.channel.id
-    await ctx.send("Beep boop... booting up mental hard drive... 💾 Session started! I'm ready to chat with everyone for the next 25 messages.")
+    """Boots up Marvin in the designated command channel."""
+    global command_channel_active
+    if ctx.channel.id == COMMAND_CHANNEL_ID:
+        command_channel_active = True
+        await ctx.send("Beep boop... mental hard drive booted! I'm awake and ready to chat here.")
+    else:
+        await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
+
+@bot.command(name="marvin_resume")
+async def marvin_resume(ctx):
+    """Resumes the conversation in the designated command channel."""
+    global command_channel_active
+    if ctx.channel.id == COMMAND_CHANNEL_ID:
+        command_channel_active = True
+        await ctx.send("Resuming transmission! Let's pick right back up where we left off. 🚀")
+    else:
+        await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
 
 @bot.command(name="marvin_sleep")
 async def marvin_sleep(ctx):
-    """Manually ends the active chat session."""
-    global active_session
-    active_session["active"] = False
-    await ctx.send("Entering sleep mode... 💤 Catch you later!")
+    """Puts Marvin to sleep in the designated command channel."""
+    global command_channel_active
+    if ctx.channel.id == COMMAND_CHANNEL_ID:
+        command_channel_active = False
+        await ctx.send("Entering sleep mode... 💤 Talk to you later!")
+    else:
+        await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
