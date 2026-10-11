@@ -1,13 +1,12 @@
 import os
 import asyncio
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import asyncpg
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 import voyageai
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 load_dotenv()
 
@@ -32,12 +31,16 @@ async def init_db():
         DB_POOL = await asyncpg.create_pool(DATABASE_URL)
 
 async def get_embedding(text: str):
-    result = voyage_client.embed(
-        texts=[text], 
-        model="voyage-3", 
-        input_type="document"
-    )
-    return result.embeddings[0]
+    # Wrapped in asyncio.to_thread so it doesn't freeze the bot loop
+    def _embed():
+        result = voyage_client.embed(
+            texts=[text], 
+            model="voyage-3", 
+            input_type="document"
+        )
+        return result.embeddings[0]
+    
+    return await asyncio.to_thread(_embed)
 
 async def search_memories(query_text: str, limit: int = 3):
     await init_db()
@@ -95,9 +98,8 @@ async def on_message(message):
     if not message.content.startswith("!"):
         async with message.channel.typing():
             try:
-                # Query vector database for relevant memories
                 memories = await search_memories(message.content)
-                memory_context = "\n".join([f"- {m}" for m in memories])
+                memory_context = "\n".join([f"- {m}" for m in memories]) if memories else "No specific memories found."
 
                 prompt = f"""
                 Relevant Memories from your database:
@@ -117,5 +119,6 @@ async def on_message(message):
                 await message.reply(response.text)
             except Exception as e:
                 print(f"Error handling message: {e}")
+                await message.channel.send(f"Oops! Hit a snag: `{e}`")
 
 bot.run(DISCORD_TOKEN)
