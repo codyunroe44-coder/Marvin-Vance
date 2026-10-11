@@ -24,8 +24,8 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Configuration: Set your designated Memory Review/Approval channel ID here (as an integer)
-APPROVAL_CHANNEL_ID = 0  # Replace with your actual Discord channel ID for approvals
+# Configuration: Designated Memory Review/Approval channel ID
+APPROVAL_CHANNEL_ID = 1558881951518167170
 
 # Authorized Discord IDs & Names
 OWNER_DISCORD_ID = 1429408267767124088
@@ -369,18 +369,6 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
 
             await message.reply(reply_text, mention_author=False)
             state.add_context_message(message.channel.id, "Marvin", reply_text)
-
-            # Send interaction to the review approval channel if configured
-            if APPROVAL_CHANNEL_ID != 0:
-                approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
-                if approval_channel:
-                    embed = discord.Embed(
-                        title="🧠 Proposed New Memory",
-                        description=f"**Speaker:** {message.author}\n**Content:** {clean_content}\n**Marvin's Reply:** {reply_text}",
-                        color=discord.Color.blue()
-                    )
-                    view = MemoryApprovalView(memory_content=f"User: {clean_content} | Marvin: {reply_text}", speaker=str(message.author))
-                    await approval_channel.send(embed=embed, view=view)
 
             if is_shared_channel and state.has_active_session(message.channel.id):
                 result = state.consume_active_reply(message.channel.id)
