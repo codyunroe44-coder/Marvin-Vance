@@ -30,7 +30,7 @@ DB_POOL = None
 # Per-channel tracking for standard chat pacing (set to 10 seconds)
 LAST_SPOKEN_TIMES = {}
 COOLDOWN_SECONDS = 10   
-RESPONSE_CHANCE = 0.30  
+RESPONSE_CHANCE = 1.00 
 
 # Specific tracking for the restricted channel session (ID: 1548506108279263312)
 RESTRICTED_CHANNEL_ID = 1548506108279263312
