@@ -7,6 +7,7 @@ from collections import deque
 from google import genai
 from google.genai import types
 from memory import save_episode, get_db_connection, generate_embedding
+from autonomous import run_pull_check  # Imports your autonomous background loop
 
 # ==========================================================
 # API SETUP & INITIALIZATION
@@ -248,6 +249,25 @@ state = MarvinBotState()
 
 
 # ==========================================================
+# BACKGROUND AUTONOMOUS WORKER LOOP
+# ==========================================================
+
+async def background_autonomous_loop():
+    """Runs the 20-minute autonomous pull check loop in the background."""
+    await bot.wait_until_ready()
+    print("Background autonomous worker loop started...")
+    while not bot.is_closed():
+        try:
+            # Run the synchronous pull check in an executor to avoid blocking the bot
+            await asyncio.to_thread(run_pull_check)
+        except Exception as e:
+            print(f"Error in background autonomous loop: {e}")
+        
+        # Wait 20 minutes (1200 seconds) before the next check
+        await asyncio.sleep(1200)
+
+
+# ==========================================================
 # BOT EVENTS & COMMANDS
 # ==========================================================
 
@@ -256,8 +276,10 @@ async def on_ready():
     print("========================================")
     print(f"Logged in as {bot.user}")
     print(f"Bot ID: {bot.user.id}")
-    print("Marvin is fully awakened with backstory, Neon DB, and shared channels active!")
+    print("Marvin is fully awakened with backstory, Neon DB, shared channels, and autonomous inner life active!")
     print("========================================")
+    # Start the background autonomous loop task
+    bot.loop.create_task(background_autonomous_loop())
 
 
 @bot.event
