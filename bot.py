@@ -4,14 +4,16 @@ import time
 import asyncpg
 import discord
 from discord.ext import commands
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # Configuration & Setup
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
+# Initialize the modern Gemini client
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -32,12 +34,12 @@ Use your retrieved long-term memories to keep context on friends, family, and pa
 """
 
 async def get_embedding(text: str):
-    response = genai.embed_content(
-        model="models/text-embedding-004",
-        content=text,
-        task_type="retrieval_document"
+    response = client.models.embed_content(
+        model="text-embedding-004",
+        contents=text,
+        config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
     )
-    return response['embedding']
+    return response.embedding.values
 
 @bot.event
 async def on_ready():
@@ -61,11 +63,6 @@ async def on_message(message):
     # 4. Handle standard chat messages
     if not message.content.startswith("!"):
         try:
-            model = genai.GenerativeModel(
-                model_name="gemini-3.8-flash",
-                system_instruction=SYSTEM_INSTRUCTION
-            )
-            
             # Search database for relevant memories if pool is ready
             context_memories = ""
             if DB_POOL:
@@ -86,9 +83,16 @@ async def on_message(message):
                 except Exception as e:
                     print(f"Memory retrieval error: {e}")
 
-            prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
+            full_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
             
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                ),
+            )
+            
             if response and response.text:
                 await message.channel.send(response.text)
         except Exception as e:
