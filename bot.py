@@ -33,7 +33,7 @@ Use your retrieved long-term memories to keep context on friends, family, and pa
 
 async def get_embedding(text: str):
     response = genai.embed_content(
-        model="models/text-embedding-004",
+        model="text-embedding-004",
         content=text,
         task_type="retrieval_document"
     )
@@ -62,7 +62,7 @@ async def on_message(message):
     if not message.content.startswith("!"):
         try:
             model = genai.GenerativeModel(
-                model_name="gemini-1.5-flash",
+                model_name="gemini-2.5-flash",
                 system_instruction=SYSTEM_INSTRUCTION
             )
             
