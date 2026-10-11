@@ -265,6 +265,12 @@ async def on_message(message):
 
     speaker_name = getattr(message.author, "display_name", message.author.name)
     clean_content = message.content.replace(f"<@!{bot.user.id}>", "").replace(f"<@{bot.user.id}>", "").strip()
+    
+    # Intercept !chipit immediately so normal chat logic doesn't trigger
+    if clean_content.lower().startswith("!chipit"):
+        await bot.process_commands(message)
+        return
+
     is_shared_channel = message.channel.id == SHARED_CHANNEL_ID
     is_owner = message.author.name.lower() in OWNER_NAMES or message.author.id == OWNER_DISCORD_ID
     is_zephyr = message.author.name.lower() in ZEPHYR_NAMES
@@ -385,14 +391,17 @@ Reply naturally to the current speaker as Marvin. Keep the reply conversational 
 
 
 @bot.command(name="chipit")
-async def chipit(ctx, *, memory_text: str):
+async def chipit(ctx, *, memory_text: str = ""):
     """Manually submit a specific fact or memory to be reviewed and approved via !chipit."""
     if ctx.author.id not in AUTHORIZED_APPROVERS:
         await ctx.send("Nice try! Only authorized administrators have the master key to approve my memories.", delete_after=5)
         return
 
-    if APPROVAL_CHANNEL_ID == 0:
-        await ctx.send("Please configure the `APPROVAL_CHANNEL_ID` in `bot.py` first.")
+    if memory_text.lower().startswith("!chipit"):
+        memory_text = memory_text[7:].strip()
+
+    if not memory_text:
+        await ctx.send("⚠️ Please provide something to chip! Example: `!chipit Fire Phoenix is Digidad`", delete_after=5)
         return
 
     approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
@@ -417,7 +426,7 @@ async def chipit(ctx, *, memory_text: str):
         embed=embed,
         view=view
     )
-    await ctx.send("Memory submitted for review and approval!", delete_after=5)
+    await ctx.send("Memory submitted for review and approval in the log channel!", delete_after=5)
 
 
 if __name__ == "__main__":
