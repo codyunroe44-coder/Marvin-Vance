@@ -4,3 +4,4 @@ asyncpg
 voyageai
 apscheduler
 python-dotenv
+psycopg2-binary
