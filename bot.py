@@ -23,11 +23,6 @@ DB_POOL = None
 
 # State controls
 RESTRICTED_CHANNEL_ID = 1502674164526350398
-SPECIAL_CHANNEL_STATE = {
-    "active": False,
-    "messages_remaining": 0,
-    "last_activity_time": 0
-}
 
 SYSTEM_INSTRUCTION = """
 You are Marvin Vance, a friendly, curious, and mischievous 13-year-old boy.
@@ -65,11 +60,39 @@ async def on_message(message):
 
     # 4. Handle standard chat messages
     if not message.content.startswith("!"):
-        if SPECIAL_CHANNEL_STATE["active"]:
-            current_time = time.time()
-            if current_time - SPECIAL_CHANNEL_STATE["last_activity_time"] > 600:
-                SPECIAL_CHANNEL_STATE["active"] = False
-                SPECIAL_CHANNEL_STATE["messages_remaining"] = 0
+        try:
+            model = genai.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=SYSTEM_INSTRUCTION
+            )
+            
+            # Search database for relevant memories if pool is ready
+            context_memories = ""
+            if DB_POOL:
+                try:
+                    user_embedding = await get_embedding(message.content)
+                    vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
+                    async with DB_POOL.acquire() as conn:
+                        rows = await conn.fetch(
+                            """
+                            SELECT content FROM marvin_episodes 
+                            ORDER BY embedding <=> $1::vector 
+                            LIMIT 3;
+                            """,
+                            vector_str
+                        )
+                        if rows:
+                            context_memories = "\nRetrieved Memories:\n" + "\n".join([f"- {r['content']}" for r in rows])
+                except Exception as e:
+                    print(f"Memory retrieval error: {e}")
+
+            prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
+            
+            response = model.generate_content(prompt)
+            if response and response.text:
+                await message.channel.send(response.text)
+        except Exception as e:
+            print(f"Gemini generation error: {e}")
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
