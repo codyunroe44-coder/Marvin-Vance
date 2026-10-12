@@ -22,7 +22,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DB_POOL = None
 
 # ---------------------------------------------------------
-# ALLOWED CHANNELS LIST (Updated with your 18 channels)
+# ALLOWED CHANNELS LIST (18 Server Channels)
 # ---------------------------------------------------------
 ALLOWED_CHANNELS = [
     1557881223500664852,  # 1
@@ -42,15 +42,26 @@ ALLOWED_CHANNELS = [
     1548506108279263312,  # 15
     1548724004238528583,  # 16
     1542151655724687410,  # 17
-    1559019097646174319,  # 18 (New)
+    1559019097646174319,  # 18
 ]
 
 COMMAND_CHANNEL_ID = 1548506108279263312
 command_channel_active = True
 
+# ---------------------------------------------------------
+# EXCLUSIVE STOP ADMIN IDs (The 4 specified accounts)
+# ---------------------------------------------------------
+STOP_ADMIN_IDS = [
+    657970330362707979,
+    562275970103509014,
+    1328778463334760529,
+    1429408267767124088,
+]
+
+# Standard Admin IDs for memory approvals
 ADMIN_IDS = [
-    1429408267767124088,  # Your User ID
-    562275970103509014,  # Friend's User ID
+    1429408267767124088,
+    562275970103509014,
 ]
 
 # Failsafe tracking variables
@@ -175,8 +186,8 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Check if message is in one of the allowed channels
-    if message.channel.id not in ALLOWED_CHANNELS:
+    # Allow DMs OR messages in the 18 allowed server channels
+    if not isinstance(message.channel, discord.DMChannel) and message.channel.id not in ALLOWED_CHANNELS:
         return
 
     await bot.process_commands(message)
@@ -232,10 +243,10 @@ async def on_message(message):
 
 @bot.command(name="stop")
 async def stop_bot(ctx):
-    """Immediately pauses Marvin's chat responses."""
+    """Immediately pauses Marvin's chat responses (Strictly restricted to the 4 specified IDs)."""
     global paused_for_failsafe
-    if ctx.author.id not in ADMIN_IDS:
-        await ctx.send("Only admins can use the stop command!", ephemeral=True)
+    if ctx.author.id not in STOP_ADMIN_IDS:
+        await ctx.send("Only authorized admins can use the stop command!", ephemeral=True)
         return
     
     paused_for_failsafe = True
@@ -245,10 +256,6 @@ async def stop_bot(ctx):
 async def continue_bot(ctx):
     """Resumes Marvin after hitting limits or stop."""
     global message_counter, paused_for_failsafe
-    if ctx.author.id not in ADMIN_IDS:
-        await ctx.send("Only admins can use the continue command!", ephemeral=True)
-        return
-    
     message_counter = 0
     paused_for_failsafe = False
     await ctx.send("▶️ **Failsafe reset!** Thanks for checking in—I'm ready to keep chatting.")
@@ -257,10 +264,6 @@ async def continue_bot(ctx):
 async def start_bot(ctx):
     """Resumes Marvin after hitting limits or stop."""
     global message_counter, paused_for_failsafe
-    if ctx.author.id not in ADMIN_IDS:
-        await ctx.send("Only admins can use the start command!", ephemeral=True)
-        return
-    
     message_counter = 0
     paused_for_failsafe = False
     await ctx.send("▶️ **System online!** Counters reset, and I'm ready to roll again.")
@@ -294,7 +297,7 @@ async def marvin_sleep(ctx):
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
-    admin_mentions = f"<@1429408267767124088> <@562275970103509014>"
+    admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
     view = MemoryApprovalView(content=content, submitter=str(ctx.author))
     await ctx.send(
         f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"\n\n*Awaiting admin approval...*",
