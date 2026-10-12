@@ -43,10 +43,11 @@ ALLOWED_CHANNELS = [
     1548724004238528583,  # 16
     1542151655724687410,  # 17
     1559019097646174319,  # 18
-    1559194608523812937,  # 19 (New)
+    1559194608523812937,  # 19
 ]
 
 COMMAND_CHANNEL_ID = 1548506108279263312
+APPROVAL_CHANNEL_ID = 1559194608523812937  # Centralized memory logs channel
 
 # ---------------------------------------------------------
 # ADMIN IDs (All 4 specified accounts for Stop & Memory Approvals)
@@ -277,12 +278,23 @@ async def marvin_sleep(ctx):
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
+    approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
+    if not approval_channel:
+        await ctx.send("⚠️ Error: The central memory logs channel could not be found!", ephemeral=True)
+        return
+
     admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
     view = MemoryApprovalView(content=content, submitter=str(ctx.author))
-    await ctx.send(
+    
+    # Send the approval card directly to the central logs channel
+    await approval_channel.send(
         f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"\n\n*Awaiting admin approval...*",
         view=view
     )
+    
+    # Confirm to the user where they submitted it
+    if ctx.channel.id != APPROVAL_CHANNEL_ID:
+        await ctx.send(f"📥 Memory submitted successfully! Routed to the admin logs channel for review.", delete_after=6)
 
 @bot.command(name="searchmem")
 async def searchmem(ctx, *, query: str):
