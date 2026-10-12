@@ -12,7 +12,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 
-# Initialize modern clients
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
 
@@ -22,20 +21,42 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 DB_POOL = None
 
-# Restricted channels where the bot is completely blocked
-RESTRICTED_CHANNELS = [
-    1502674164526350398,
+# ---------------------------------------------------------
+# ALLOWED CHANNELS LIST (Updated with your 18 channels)
+# ---------------------------------------------------------
+ALLOWED_CHANNELS = [
+    1557881223500664852,  # 1
+    1557882431007227934,  # 2
+    1557882856402063491,  # 3
+    1557929062541037690,  # 4
+    1557930139298431137,  # 5
+    1557930480559726693,  # 6
+    1557930724433072198,  # 7
+    1557969776851161130,  # 8
+    1558129920528613437,  # 9
+    1558130452810956931,  # 10
+    1558284065784856667,  # 11
+    1558426658539704450,  # 12
+    1549253946978209872,  # 13
+    1555128853150830602,  # 14
+    1548506108279263312,  # 15
+    1548724004238528583,  # 16
+    1542151655724687410,  # 17
+    1559019097646174319,  # 18 (New)
 ]
 
-# The specific control channel ID
 COMMAND_CHANNEL_ID = 1548506108279263312
 command_channel_active = True
 
-# Authorized admins: You and your friend
 ADMIN_IDS = [
     1429408267767124088,  # Your User ID
     562275970103509014,  # Friend's User ID
 ]
+
+# Failsafe tracking variables
+message_counter = 0
+MESSAGE_LIMIT = 10
+paused_for_failsafe = False
 
 SYSTEM_INSTRUCTION = """
 You are Marvin Vance, a friendly, curious, and mischievous 13-year-old boy.
@@ -48,7 +69,6 @@ async def get_voyage_embedding(text: str):
     result = voyage_client.embed([text], model="voyage-3", input_type="document")
     return result.embeddings[0]
 
-# Persistent View for handling memory approvals across reboots
 class MemoryApprovalView(View):
     def __init__(self, content: str = None, submitter: str = None):
         super().__init__(timeout=None)
@@ -150,20 +170,31 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    global command_channel_active
+    global command_channel_active, message_counter, paused_for_failsafe
 
     if message.author == bot.user:
         return
 
-    if message.channel.id in RESTRICTED_CHANNELS:
+    # Check if message is in one of the allowed channels
+    if message.channel.id not in ALLOWED_CHANNELS:
+        return
+
+    await bot.process_commands(message)
+
+    if paused_for_failsafe and not message.content.startswith("!"):
         return
 
     if message.channel.id == COMMAND_CHANNEL_ID and not command_channel_active and not message.content.startswith("!"):
         return
 
-    await bot.process_commands(message)
-
     if not message.content.startswith("!"):
+        message_counter += 1
+        
+        if message_counter >= MESSAGE_LIMIT:
+            paused_for_failsafe = True
+            await message.channel.send("🛑 **Failsafe triggered!** I've hit my 10-message response limit. An admin needs to type `!continue` or `!start` to let me keep chatting.")
+            return
+
         try:
             context_memories = ""
             if DB_POOL:
@@ -198,6 +229,41 @@ async def on_message(message):
                 await message.channel.send(response.text)
         except Exception as e:
             print(f"Gemini generation error: {e}")
+
+@bot.command(name="stop")
+async def stop_bot(ctx):
+    """Immediately pauses Marvin's chat responses."""
+    global paused_for_failsafe
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("Only admins can use the stop command!", ephemeral=True)
+        return
+    
+    paused_for_failsafe = True
+    await ctx.send("🛑 **Marvin halted!** I've paused my chat responses. An admin can type `!continue` or `!start` when you want me to wake back up.")
+
+@bot.command(name="continue")
+async def continue_bot(ctx):
+    """Resumes Marvin after hitting limits or stop."""
+    global message_counter, paused_for_failsafe
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("Only admins can use the continue command!", ephemeral=True)
+        return
+    
+    message_counter = 0
+    paused_for_failsafe = False
+    await ctx.send("▶️ **Failsafe reset!** Thanks for checking in—I'm ready to keep chatting.")
+
+@bot.command(name="start")
+async def start_bot(ctx):
+    """Resumes Marvin after hitting limits or stop."""
+    global message_counter, paused_for_failsafe
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("Only admins can use the start command!", ephemeral=True)
+        return
+    
+    message_counter = 0
+    paused_for_failsafe = False
+    await ctx.send("▶️ **System online!** Counters reset, and I'm ready to roll again.")
 
 @bot.command(name="marvin_engage")
 async def marvin_engage(ctx):
