@@ -48,19 +48,13 @@ ALLOWED_CHANNELS = [
 COMMAND_CHANNEL_ID = 1548506108279263312
 
 # ---------------------------------------------------------
-# EXCLUSIVE STOP ADMIN IDs (The 4 specified accounts)
+# ADMIN IDs (All 4 specified accounts for Stop & Memory Approvals)
 # ---------------------------------------------------------
-STOP_ADMIN_IDS = [
+ADMIN_IDS = [
     657970330362707979,
     562275970103509014,
     1328778463334760529,
     1429408267767124088,
-]
-
-# Standard Admin IDs for memory approvals
-ADMIN_IDS = [
-    1429408267767124088,
-    562275970103509014,
 ]
 
 # Per-channel active states (False by default until !start is called)
@@ -249,7 +243,7 @@ async def continue_bot(ctx):
 @bot.command(name="stop")
 async def stop_bot(ctx):
     """Emergency stop command to halt Marvin in this channel (Restricted to the 4 admin IDs)."""
-    if ctx.author.id not in STOP_ADMIN_IDS:
+    if ctx.author.id not in ADMIN_IDS:
         await ctx.send("Only authorized admins can use the emergency stop command!", ephemeral=True)
         return
     
