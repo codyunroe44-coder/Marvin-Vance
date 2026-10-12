@@ -43,11 +43,11 @@ ALLOWED_CHANNELS = [
     1548724004238528583,  # 16
     1542151655724687410,  # 17
     1559019097646174319,  # 18
-    1559194608523812937,  # 19
+    1559194608523812937,  # 19 (Also serves as memory log channel)
 ]
 
 COMMAND_CHANNEL_ID = 1548506108279263312
-APPROVAL_CHANNEL_ID = 1559194608523812937  # Centralized memory logs channel
+APPROVAL_CHANNEL_ID = 1559194608523812937
 
 # ---------------------------------------------------------
 # ADMIN IDs (All 4 specified accounts for Stop & Memory Approvals)
@@ -194,12 +194,13 @@ async def on_message(message):
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
-    # Process chat message through Gemini
+    # Process chat message, images, and videos through Gemini
     try:
         context_memories = ""
         if DB_POOL:
             try:
-                user_embedding = await get_voyage_embedding(message.content)
+                search_text = message.content if message.content else "Media attachment"
+                user_embedding = await get_voyage_embedding(search_text)
                 vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
                 async with DB_POOL.acquire() as conn:
                     rows = await conn.fetch(
@@ -215,11 +216,26 @@ async def on_message(message):
             except Exception as e:
                 print(f"Memory retrieval error: {e}")
 
-        full_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
-        
+        content_payload = []
+        text_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
+        content_payload.append(text_prompt)
+
+        # Download and include any image or video attachments
+        image_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.gif')
+        video_extensions = ('.mp4', '.mov', '.webm', '.mkv', '.avi')
+
+        for attachment in message.attachments:
+            filename_lower = attachment.filename.lower()
+            if filename_lower.endswith(image_extensions):
+                media_bytes = await attachment.read()
+                content_payload.append(types.Part.from_bytes(data=media_bytes, mime_type=attachment.content_type or 'image/png'))
+            elif filename_lower.endswith(video_extensions):
+                media_bytes = await attachment.read()
+                content_payload.append(types.Part.from_bytes(data=media_bytes, mime_type=attachment.content_type or 'video/mp4'))
+
         response = ai_client.models.generate_content(
             model='gemini-3.8-flash',
-            contents=full_prompt,
+            contents=content_payload,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
             ),
@@ -286,13 +302,11 @@ async def chipit(ctx, *, content: str):
     admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
     view = MemoryApprovalView(content=content, submitter=str(ctx.author))
     
-    # Send the approval card directly to the central logs channel
     await approval_channel.send(
         f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"\n\n*Awaiting admin approval...*",
         view=view
     )
     
-    # Confirm to the user where they submitted it
     if ctx.channel.id != APPROVAL_CHANNEL_ID:
         await ctx.send(f"📥 Memory submitted successfully! Routed to the admin logs channel for review.", delete_after=6)
 
