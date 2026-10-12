@@ -46,7 +46,6 @@ ALLOWED_CHANNELS = [
 ]
 
 COMMAND_CHANNEL_ID = 1548506108279263312
-command_channel_active = True
 
 # ---------------------------------------------------------
 # EXCLUSIVE STOP ADMIN IDs (The 4 specified accounts)
@@ -64,10 +63,8 @@ ADMIN_IDS = [
     562275970103509014,
 ]
 
-# Failsafe tracking variables
-message_counter = 0
-MESSAGE_LIMIT = 10
-paused_for_failsafe = False
+# Per-channel active states (False by default until !start is called)
+channel_active_states = {}
 
 SYSTEM_INSTRUCTION = """
 You are Marvin Vance, a friendly, curious, and mischievous 13-year-old boy.
@@ -181,116 +178,104 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    global command_channel_active, message_counter, paused_for_failsafe
-
     if message.author == bot.user:
         return
 
-    # Allow DMs OR messages in the 18 allowed server channels
-    if not isinstance(message.channel, discord.DMChannel) and message.channel.id not in ALLOWED_CHANNELS:
+    is_dm = isinstance(message.channel, discord.DMChannel)
+
+    # If it's not a DM, enforce the 18-channel whitelist
+    if not is_dm and message.channel.id not in ALLOWED_CHANNELS:
         return
 
     await bot.process_commands(message)
 
-    if paused_for_failsafe and not message.content.startswith("!"):
+    # If it's a command, let command processor handle it
+    if message.content.startswith("!"):
         return
 
-    if message.channel.id == COMMAND_CHANNEL_ID and not command_channel_active and not message.content.startswith("!"):
+    # Server channels require Marvin to be explicitly started. DMs bypass this restriction entirely!
+    channel_id = message.channel.id
+    if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
-    if not message.content.startswith("!"):
-        message_counter += 1
+    # Process chat message through Gemini
+    try:
+        context_memories = ""
+        if DB_POOL:
+            try:
+                user_embedding = await get_voyage_embedding(message.content)
+                vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
+                async with DB_POOL.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT content FROM marvin_episodes 
+                        ORDER BY embedding <=> $1::vector 
+                        LIMIT 3;
+                        """,
+                        vector_str
+                    )
+                    if rows:
+                        context_memories = "\nRetrieved Memories from Database:\n" + "\n".join([f"- {r['content']}" for r in rows])
+            except Exception as e:
+                print(f"Memory retrieval error: {e}")
+
+        full_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
         
-        if message_counter >= MESSAGE_LIMIT:
-            paused_for_failsafe = True
-            await message.channel.send("🛑 **Failsafe triggered!** I've hit my 10-message response limit. An admin needs to type `!continue` or `!start` to let me keep chatting.")
-            return
-
-        try:
-            context_memories = ""
-            if DB_POOL:
-                try:
-                    user_embedding = await get_voyage_embedding(message.content)
-                    vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
-                    async with DB_POOL.acquire() as conn:
-                        rows = await conn.fetch(
-                            """
-                            SELECT content FROM marvin_episodes 
-                            ORDER BY embedding <=> $1::vector 
-                            LIMIT 3;
-                            """,
-                            vector_str
-                        )
-                        if rows:
-                            context_memories = "\nRetrieved Memories from Database:\n" + "\n".join([f"- {r['content']}" for r in rows])
-                except Exception as e:
-                    print(f"Memory retrieval error: {e}")
-
-            full_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
-            
-            response = ai_client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=full_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                ),
-            )
-            
-            if response and response.text:
-                await message.channel.send(response.text)
-        except Exception as e:
-            print(f"Gemini generation error: {e}")
-
-@bot.command(name="stop")
-async def stop_bot(ctx):
-    """Immediately pauses Marvin's chat responses (Strictly restricted to the 4 specified IDs)."""
-    global paused_for_failsafe
-    if ctx.author.id not in STOP_ADMIN_IDS:
-        await ctx.send("Only authorized admins can use the stop command!", ephemeral=True)
-        return
-    
-    paused_for_failsafe = True
-    await ctx.send("🛑 **Marvin halted!** I've paused my chat responses. An admin can type `!continue` or `!start` when you want me to wake back up.")
-
-@bot.command(name="continue")
-async def continue_bot(ctx):
-    """Resumes Marvin after hitting limits or stop."""
-    global message_counter, paused_for_failsafe
-    message_counter = 0
-    paused_for_failsafe = False
-    await ctx.send("▶️ **Failsafe reset!** Thanks for checking in—I'm ready to keep chatting.")
+        response = ai_client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=full_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_INSTRUCTION,
+            ),
+        )
+        
+        if response and response.text:
+            await message.channel.send(response.text)
+    except Exception as e:
+        print(f"Gemini generation error: {e}")
 
 @bot.command(name="start")
 async def start_bot(ctx):
-    """Resumes Marvin after hitting limits or stop."""
-    global message_counter, paused_for_failsafe
-    message_counter = 0
-    paused_for_failsafe = False
-    await ctx.send("▶️ **System online!** Counters reset, and I'm ready to roll again.")
+    """Wakes Marvin up in this specific channel (Free to use for anyone)."""
+    channel_active_states[ctx.channel.id] = True
+    await ctx.send("▶️ **System online!** I'm awake and ready to chat in this channel. Let's talk!")
+
+@bot.command(name="continue")
+async def continue_bot(ctx):
+    """Resumes chat in this channel (Free to use for anyone)."""
+    channel_active_states[ctx.channel.id] = True
+    await ctx.send("▶️ **Conversation continuing!** Ready to pick right back up.")
+
+@bot.command(name="stop")
+async def stop_bot(ctx):
+    """Emergency stop command to halt Marvin in this channel (Restricted to the 4 admin IDs)."""
+    if ctx.author.id not in STOP_ADMIN_IDS:
+        await ctx.send("Only authorized admins can use the emergency stop command!", ephemeral=True)
+        return
+    
+    channel_active_states[ctx.channel.id] = False
+    await ctx.send("🛑 **Marvin halted (Emergency Stop)!** I've paused my chat responses here.")
 
 @bot.command(name="marvin_engage")
 async def marvin_engage(ctx):
-    global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
-        command_channel_active = True
+        channel_active_states[ctx.channel.id] = True
         await ctx.send("Beep boop... mental hard drive booted! I'm awake and ready to chat here.")
     else:
         await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
 
 @bot.command(name="marvin_resume")
 async def marvin_resume(ctx):
-    global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
-        command_channel_active = True
+        channel_active_states[ctx.channel.id] = True
         await ctx.send("Resuming transmission! Let's pick right back up where we left off. 🚀")
     else:
         await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
 
 @bot.command(name="marvin_sleep")
 async def marvin_sleep(ctx):
-    global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
-        command_channel_active = False
+        channel_active_states[ctx.channel.id] = False
         await ctx.send("Entering sleep mode... 💤 Talk to you later!")
     else:
         await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
