@@ -48,6 +48,86 @@ async def get_voyage_embedding(text: str):
     result = voyage_client.embed([text], model="voyage-3", input_type="document")
     return result.embeddings[0]
 
+# Persistent View for handling memory approvals across reboots
+class MemoryApprovalView(View):
+    def __init__(self, content: str = None, submitter: str = None):
+        super().__init__(timeout=None)
+        self.content = content
+        self.submitter = submitter
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅", custom_id="marvin_memory_approve_btn")
+    async def approve_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id not in ADMIN_IDS:
+            await interaction.response.send_message("You don't have permission to approve this memory!", ephemeral=True)
+            return
+
+        try:
+            await interaction.response.defer()
+
+            # Extract content from the message embed if loaded persistently after restart
+            memory_content = self.content
+            if not memory_content:
+                # Fallback: parse from the message text if view was reloaded
+                lines = interaction.message.content.split('\n')
+                for line in lines:
+                    if line.startswith('> "') and line.endswith('"'):
+                        memory_content = line[3:-1]
+                        break
+            
+            if not memory_content:
+                memory_content = interaction.message.embeds[0].description if interaction.message.embeds else "Unknown memory"
+
+            embedding = await get_voyage_embedding(memory_content)
+            vector_str = "[" + ",".join(map(str, embedding)) + "]"
+
+            async with DB_POOL.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO marvin_episodes (content, embedding)
+                    VALUES ($1, $2::vector);
+                    """,
+                    memory_content, vector_str
+                )
+
+            for child in self.children:
+                child.disabled = True
+            
+            await interaction.edit_original_response(
+                content=f"✅ **Memory Approved & Locked In by {interaction.user.mention}!**\n> \"{memory_content}\"",
+                view=self
+            )
+        except Exception as e:
+            print(f"Error in approve_button: {e}")
+            await interaction.followup.send(f"⚠️ Error approving memory: {e}", ephemeral=True)
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, emoji="❌", custom_id="marvin_memory_deny_btn")
+    async def deny_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id not in ADMIN_IDS:
+            await interaction.response.send_message("You don't have permission to deny this memory!", ephemeral=True)
+            return
+
+        try:
+            await interaction.response.defer()
+
+            memory_content = self.content
+            if not memory_content:
+                lines = interaction.message.content.split('\n')
+                for line in lines:
+                    if line.startswith('> "') and line.endswith('"'):
+                        memory_content = line[3:-1]
+                        break
+
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.edit_original_response(
+                content=f"❌ **Memory Denied by {interaction.user.mention}.**\n> \"{memory_content or 'Memory'}\"",
+                view=self
+            )
+        except Exception as e:
+            print(f"Error in deny_button: {e}")
+            await interaction.followup.send(f"⚠️ Error denying memory: {e}", ephemeral=True)
+
 @bot.event
 async def on_ready():
     global DB_POOL
@@ -57,6 +137,9 @@ async def on_ready():
         print('Neon Database pool initialized successfully.')
     except Exception as e:
         print(f'Database pool error: {e}')
+    
+    # Register the persistent view so buttons keep working after a restart
+    bot.add_view(MemoryApprovalView())
     print(f'Marvin Vance is online as {bot.user}')
 
 @bot.event
@@ -143,58 +226,6 @@ async def marvin_sleep(ctx):
         await ctx.send("Entering sleep mode... 💤 Talk to you later!")
     else:
         await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
-
-class MemoryApprovalView(View):
-    def __init__(self, content: str, submitter: str):
-        super().__init__(timeout=None)
-        self.content = content
-        self.submitter = submitter
-
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅")
-    async def approve_button(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id not in ADMIN_IDS:
-            await interaction.response.send_message("You don't have permission to approve this memory!", ephemeral=True)
-            return
-
-        # Acknowledge immediately to prevent Discord interaction timeout
-        await interaction.response.defer()
-
-        embedding = await get_voyage_embedding(self.content)
-        vector_str = "[" + ",".join(map(str, embedding)) + "]"
-
-        async with DB_POOL.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO marvin_episodes (content, embedding)
-                VALUES ($1, $2::vector);
-                """,
-                self.content, vector_str
-            )
-
-        for child in self.children:
-            child.disabled = True
-        
-        await interaction.edit_original_response(
-            content=f"✅ **Memory Approved & Locked In by {interaction.user.mention}!**\n> \"{self.content}\"",
-            view=self
-        )
-
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, emoji="❌")
-    async def deny_button(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id not in ADMIN_IDS:
-            await interaction.response.send_message("You don't have permission to deny this memory!", ephemeral=True)
-            return
-
-        # Acknowledge immediately
-        await interaction.response.defer()
-
-        for child in self.children:
-            child.disabled = True
-
-        await interaction.edit_original_response(
-            content=f"❌ **Memory Denied by {interaction.user.mention}.**\n> \"{self.content}\"",
-            view=self
-        )
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
