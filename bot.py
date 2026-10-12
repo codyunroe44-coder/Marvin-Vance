@@ -66,14 +66,18 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
+    # 1. Completely ignore restricted channels
     if message.channel.id in RESTRICTED_CHANNELS:
         return
 
+    # 2. If it's the control channel, check if he is currently put to sleep
     if message.channel.id == COMMAND_CHANNEL_ID and not command_channel_active and not message.content.startswith("!"):
         return
 
+    # Process commands first so control commands always work
     await bot.process_commands(message)
 
+    # Handle standard chat messages
     if not message.content.startswith("!"):
         try:
             context_memories = ""
@@ -112,6 +116,7 @@ async def on_message(message):
 
 @bot.command(name="marvin_engage")
 async def marvin_engage(ctx):
+    """Boots up Marvin in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = True
@@ -121,6 +126,7 @@ async def marvin_engage(ctx):
 
 @bot.command(name="marvin_resume")
 async def marvin_resume(ctx):
+    """Resumes the conversation in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = True
@@ -130,6 +136,7 @@ async def marvin_resume(ctx):
 
 @bot.command(name="marvin_sleep")
 async def marvin_sleep(ctx):
+    """Puts Marvin to sleep in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = False
@@ -149,6 +156,9 @@ class MemoryApprovalView(View):
             await interaction.response.send_message("You don't have permission to approve this memory!", ephemeral=True)
             return
 
+        # Acknowledge immediately to prevent Discord interaction timeout
+        await interaction.response.defer()
+
         embedding = await get_voyage_embedding(self.content)
         vector_str = "[" + ",".join(map(str, embedding)) + "]"
 
@@ -164,7 +174,7 @@ class MemoryApprovalView(View):
         for child in self.children:
             child.disabled = True
         
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"✅ **Memory Approved & Locked In by {interaction.user.mention}!**\n> \"{self.content}\"",
             view=self
         )
@@ -175,10 +185,13 @@ class MemoryApprovalView(View):
             await interaction.response.send_message("You don't have permission to deny this memory!", ephemeral=True)
             return
 
+        # Acknowledge immediately
+        await interaction.response.defer()
+
         for child in self.children:
             child.disabled = True
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"❌ **Memory Denied by {interaction.user.mention}.**\n> \"{self.content}\"",
             view=self
         )
@@ -194,6 +207,7 @@ async def chipit(ctx, *, content: str):
 
 @bot.command(name="searchmem")
 async def searchmem(ctx, *, query: str):
+    """Explicitly searches the vector database for a query."""
     if not DB_POOL:
         await ctx.send("Database pool isn't connected right now, dude!")
         return
