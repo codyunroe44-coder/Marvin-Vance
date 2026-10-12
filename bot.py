@@ -1,4 +1,4 @@
-import os
+ import os
 import asyncpg
 import discord
 from discord.ext import commands
@@ -43,6 +43,7 @@ ALLOWED_CHANNELS = [
     1548724004238528583,  # 16
     1542151655724687410,  # 17
     1559019097646174319,  # 18
+    1559194608523812937,  # 19
 ]
 
 COMMAND_CHANNEL_ID = 1548506108279263312
