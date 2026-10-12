@@ -198,10 +198,11 @@ class MemoryApprovalView(View):
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
-    """Anyone can submit a memory, triggering interactive approval buttons for admins."""
+    """Anyone can submit a memory, pinging admins and triggering approval buttons."""
+    admin_mentions = f"<@1429408267767124088> <@562275970103509014>"
     view = MemoryApprovalView(content=content, submitter=str(ctx.author))
     await ctx.send(
-        f"📥 **New Memory Submission from {ctx.author.mention}:**\n> \"{content}\"\n\n*Awaiting admin approval...*",
+        f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"\n\n*Awaiting admin approval...*",
         view=view
     )
 
