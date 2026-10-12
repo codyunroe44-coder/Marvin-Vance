@@ -1,4 +1,4 @@
- import os
+import os
 import asyncpg
 import discord
 from discord.ext import commands
@@ -22,7 +22,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DB_POOL = None
 
 # ---------------------------------------------------------
-# ALLOWED CHANNELS LIST (18 Server Channels)
+# ALLOWED CHANNELS LIST (19 Server Channels)
 # ---------------------------------------------------------
 ALLOWED_CHANNELS = [
     1557881223500664852,  # 1
@@ -43,7 +43,7 @@ ALLOWED_CHANNELS = [
     1548724004238528583,  # 16
     1542151655724687410,  # 17
     1559019097646174319,  # 18
-    1559194608523812937,  # 19
+    1559194608523812937,  # 19 (New)
 ]
 
 COMMAND_CHANNEL_ID = 1548506108279263312
@@ -178,7 +178,7 @@ async def on_message(message):
 
     is_dm = isinstance(message.channel, discord.DMChannel)
 
-    # If it's not a DM, enforce the 18-channel whitelist
+    # If it's not a DM, enforce the whitelist
     if not is_dm and message.channel.id not in ALLOWED_CHANNELS:
         return
 
