@@ -2,6 +2,7 @@ import os
 import asyncpg
 import discord
 from discord.ext import commands
+from discord.ui import View, Button
 from google import genai
 from google.genai import types
 import voyageai
@@ -26,11 +27,15 @@ RESTRICTED_CHANNELS = [
     1502674164526350398,
 ]
 
-# The specific channel ID that requires engagement/sleep/resume commands
+# The specific control channel ID
 COMMAND_CHANNEL_ID = 1548506108279263312
+command_channel_active = True
 
-# State tracking for the command channel session (active or asleep)
-command_channel_active = False
+# Authorized admins: You and your friend
+ADMIN_IDS = [
+    1429408267767124088,  # Your User ID
+    562275970103509014,  # Friend's User ID
+]
 
 SYSTEM_INSTRUCTION = """
 You are Marvin Vance, a friendly, curious, and mischievous 13-year-old boy.
@@ -48,6 +53,7 @@ async def on_ready():
     global DB_POOL
     try:
         DB_POOL = await asyncpg.create_pool(DATABASE_URL)
+        await init_db()
         print('Neon Database pool initialized successfully.')
     except Exception as e:
         print(f'Database pool error: {e}')
@@ -60,17 +66,14 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # 1. Completely ignore restricted channels
     if message.channel.id in RESTRICTED_CHANNELS:
         return
 
-    # 2. If it's the special command channel, check if he is currently allowed to speak
     if message.channel.id == COMMAND_CHANNEL_ID and not command_channel_active and not message.content.startswith("!"):
         return
 
     await bot.process_commands(message)
 
-    # Handle standard chat messages
     if not message.content.startswith("!"):
         try:
             context_memories = ""
@@ -109,7 +112,6 @@ async def on_message(message):
 
 @bot.command(name="marvin_engage")
 async def marvin_engage(ctx):
-    """Boots up Marvin in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = True
@@ -119,7 +121,6 @@ async def marvin_engage(ctx):
 
 @bot.command(name="marvin_resume")
 async def marvin_resume(ctx):
-    """Resumes the conversation in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = True
@@ -129,7 +130,6 @@ async def marvin_resume(ctx):
 
 @bot.command(name="marvin_sleep")
 async def marvin_sleep(ctx):
-    """Puts Marvin to sleep in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = False
@@ -137,29 +137,63 @@ async def marvin_sleep(ctx):
     else:
         await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
 
+class MemoryApprovalView(View):
+    def __init__(self, content: str, submitter: str):
+        super().__init__(timeout=None)
+        self.content = content
+        self.submitter = submitter
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅")
+    async def approve_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id not in ADMIN_IDS:
+            await interaction.response.send_message("You don't have permission to approve this memory!", ephemeral=True)
+            return
+
+        embedding = await get_voyage_embedding(self.content)
+        vector_str = "[" + ",".join(map(str, embedding)) + "]"
+
+        async with DB_POOL.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO marvin_episodes (content, embedding)
+                VALUES ($1, $2::vector);
+                """,
+                self.content, vector_str
+            )
+
+        for child in self.children:
+            child.disabled = True
+        
+        await interaction.response.edit_message(
+            content=f"✅ **Memory Approved & Locked In by {interaction.user.mention}!**\n> \"{self.content}\"",
+            view=self
+        )
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, emoji="❌")
+    async def deny_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id not in ADMIN_IDS:
+            await interaction.response.send_message("You don't have permission to deny this memory!", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+
+        await interaction.response.edit_message(
+            content=f"❌ **Memory Denied by {interaction.user.mention}.**\n> \"{self.content}\"",
+            view=self
+        )
+
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
-    if ctx.author.id != 152674164526350398: 
-        await ctx.send("You don't have permission to add memories to my database.", delete_after=5)
-        return
-
-    await init_db()
-    embedding = await get_voyage_embedding(content)
-    vector_str = "[" + ",".join(map(str, embedding)) + "]"
-
-    async with DB_POOL.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO marvin_episodes (content, embedding)
-            VALUES ($1, $2::vector);
-            """,
-            content, vector_str
-        )
-    await ctx.send(f"Memory locked right into my chips, {ctx.author.mention}!")
+    """Anyone can submit a memory, triggering interactive approval buttons for admins."""
+    view = MemoryApprovalView(content=content, submitter=str(ctx.author))
+    await ctx.send(
+        f"📥 **New Memory Submission from {ctx.author.mention}:**\n> \"{content}\"\n\n*Awaiting admin approval...*",
+        view=view
+    )
 
 @bot.command(name="searchmem")
 async def searchmem(ctx, *, query: str):
-    """Explicitly searches the vector database for a query."""
     if not DB_POOL:
         await ctx.send("Database pool isn't connected right now, dude!")
         return
