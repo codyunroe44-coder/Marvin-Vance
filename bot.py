@@ -64,10 +64,8 @@ class MemoryApprovalView(View):
         try:
             await interaction.response.defer()
 
-            # Extract content from the message embed if loaded persistently after restart
             memory_content = self.content
             if not memory_content:
-                # Fallback: parse from the message text if view was reloaded
                 lines = interaction.message.content.split('\n')
                 for line in lines:
                     if line.startswith('> "') and line.endswith('"'):
@@ -77,16 +75,25 @@ class MemoryApprovalView(View):
             if not memory_content:
                 memory_content = interaction.message.embeds[0].description if interaction.message.embeds else "Unknown memory"
 
+            submitter_name = self.submitter
+            if not submitter_name:
+                if "New Memory Submission from " in interaction.message.content:
+                    parts = interaction.message.content.split("New Memory Submission from ")
+                    if len(parts) > 1:
+                        submitter_name = parts[1].split(" ")[0]
+                if not submitter_name:
+                    submitter_name = "Unknown"
+
             embedding = await get_voyage_embedding(memory_content)
             vector_str = "[" + ",".join(map(str, embedding)) + "]"
 
             async with DB_POOL.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO marvin_episodes (content, embedding)
-                    VALUES ($1, $2::vector);
+                    INSERT INTO marvin_episodes (speaker, content, embedding)
+                    VALUES ($1, $2, $3::vector);
                     """,
-                    memory_content, vector_str
+                    submitter_name, memory_content, vector_str
                 )
 
             for child in self.children:
@@ -138,7 +145,6 @@ async def on_ready():
     except Exception as e:
         print(f'Database pool error: {e}')
     
-    # Register the persistent view so buttons keep working after a restart
     bot.add_view(MemoryApprovalView())
     print(f'Marvin Vance is online as {bot.user}')
 
@@ -149,18 +155,14 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # 1. Completely ignore restricted channels
     if message.channel.id in RESTRICTED_CHANNELS:
         return
 
-    # 2. If it's the control channel, check if he is currently put to sleep
     if message.channel.id == COMMAND_CHANNEL_ID and not command_channel_active and not message.content.startswith("!"):
         return
 
-    # Process commands first so control commands always work
     await bot.process_commands(message)
 
-    # Handle standard chat messages
     if not message.content.startswith("!"):
         try:
             context_memories = ""
@@ -199,7 +201,6 @@ async def on_message(message):
 
 @bot.command(name="marvin_engage")
 async def marvin_engage(ctx):
-    """Boots up Marvin in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = True
@@ -209,7 +210,6 @@ async def marvin_engage(ctx):
 
 @bot.command(name="marvin_resume")
 async def marvin_resume(ctx):
-    """Resumes the conversation in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = True
@@ -219,7 +219,6 @@ async def marvin_resume(ctx):
 
 @bot.command(name="marvin_sleep")
 async def marvin_sleep(ctx):
-    """Puts Marvin to sleep in the designated command channel."""
     global command_channel_active
     if ctx.channel.id == COMMAND_CHANNEL_ID:
         command_channel_active = False
@@ -229,7 +228,6 @@ async def marvin_sleep(ctx):
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
-    """Anyone can submit a memory, pinging admins and triggering approval buttons."""
     admin_mentions = f"<@1429408267767124088> <@562275970103509014>"
     view = MemoryApprovalView(content=content, submitter=str(ctx.author))
     await ctx.send(
@@ -239,7 +237,6 @@ async def chipit(ctx, *, content: str):
 
 @bot.command(name="searchmem")
 async def searchmem(ctx, *, query: str):
-    """Explicitly searches the vector database for a query."""
     if not DB_POOL:
         await ctx.send("Database pool isn't connected right now, dude!")
         return
@@ -270,6 +267,7 @@ async def init_db():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS marvin_episodes (
                 id SERIAL PRIMARY KEY,
+                speaker TEXT NOT NULL,
                 content TEXT,
                 embedding vector
             );
