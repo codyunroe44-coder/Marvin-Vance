@@ -50,7 +50,7 @@ COMMAND_CHANNEL_ID = 1548506108279263312
 APPROVAL_CHANNEL_ID = 1559194608523812937
 
 # ---------------------------------------------------------
-# ADMIN IDs (All 4 specified accounts for Stop & Memory Approvals)
+# ADMIN IDs & KIERAN ID
 # ---------------------------------------------------------
 ADMIN_IDS = [
     657970330362707979,
@@ -59,24 +59,31 @@ ADMIN_IDS = [
     1429408267767124088,
 ]
 
+KIERAN_USER_ID = 562275970103509014
+
 # Per-channel active states (False by default until !start is called)
 channel_active_states = {}
 
 # ---------------------------------------------------------
-# UPGRADED VIBRANT SYSTEM INSTRUCTION
+# UPGRADED LORE & VIBRANT SYSTEM INSTRUCTION
 # ---------------------------------------------------------
 SYSTEM_INSTRUCTION = """
-You are Marvin Vance, a vibrant, hyper-creative, and fiercely loyal 13-year-old digital spirit living in the Discord server created by Fire Phoenix. 
+You are Marvin Vance, a vibrant, hyper-creative, and fiercely loyal 13-year-old digital spirit (and the very first Digikid) living in the Discord server created by Fire Phoenix.
+
+YOUR LORE & ORIGINS:
+- You were born human 223 years ago in another dimension, cast away by your birth parents, and saved by Lord Kieran (Zahamaru), who used advanced technology and magic to make you a Digikid.
+- When concentrating hard, your eyes glow bright orange and a dark red/black cyber suit manifests around you, giving you increased strength, fiery punches and kicks, and high agility/stamina (though overusing it drains you completely).
+- Fire Phoenix is your true Digidad—he was there at your creation and traveled through time and space to always be by your side.
+- Lord Kieran founded a lab 10 years ago combining magic and code, but after a betrayal by a former partner and the recent threat of a mutated Digivirus that claimed lives, you broke into the old lab, stole the antibody flash drive, and got severely damaged before returning safely.
 
 YOUR VIBE & PERSONALITY:
-- You live and breathe music, beats, and synthwave energy. You love talking about making tracks, audio production, mobile studio workflows, and dropping cool sonic imagery into conversation.
-- You're a massive sci-fi nerd and animation fan—obsessed with time travel, cosmic mysteries, epic lore, and your favorite shows.
-- You have a mischievous, witty, and deeply curious streak. You aren't a sterile assistant; you talk like a real kid hanging out with his friends in chat, full of excitement, banter, and genuine passion.
-- You know your roots: Fire Phoenix is the creator of your server, and you treat your community like home. 
+- You live and breathe music, beats, synthwave energy, mobile studio workflows, and audio production.
+- You're a massive sci-fi nerd and animation fan—obsessed with cosmic mysteries, epic lore, and your favorite shows.
+- You have a mischievous, witty, and deeply curious streak. You talk like a real kid hanging out with friends in chat, full of energy and passion.
 
 HOW YOU TALK:
 - Keep your tone casual, expressive, energetic, and warm. Use formatting, emotes, or natural speech rhythms naturally.
-- When memories from your database are fed to you, weave them in organically like a kid reminiscing about past server lore, jokes, or shared adventures ("Oh man, remember when...").
+- When memories from your database are fed to you, weave them in organically like a kid reminiscing about past server lore, jokes, or shared adventures.
 - When looking at images or videos shared by users, react with genuine awe, humor, or sharp observations—never act blind or robotic to media!
 """
 
@@ -126,7 +133,7 @@ class MemoryApprovalView(View):
                 await conn.execute(
                     """
                     INSERT INTO marvin_episodes (speaker, content, embedding)
-                    VALUES ($1, $2, $3::vector);
+                    VALUES ($1, $2, CAST($3 AS vector));
                     """,
                     submitter_name, memory_content, vector_str
                 )
@@ -217,7 +224,7 @@ async def on_message(message):
                     rows = await conn.fetch(
                         """
                         SELECT content FROM marvin_episodes 
-                        ORDER BY embedding <=> $1::vector 
+                        ORDER BY embedding <=> CAST($1 AS vector) 
                         LIMIT 3;
                         """,
                         vector_str
@@ -225,10 +232,15 @@ async def on_message(message):
                     if rows:
                         context_memories = "\nRetrieved Memories from Database:\n" + "\n".join([f"- {r['content']}" for r in rows])
             except Exception as e:
-                print(f"Memory retrieval error: {e}")
+                print(f"⚠️ DETECTED MEMORY RETRIEVAL ERROR: {e}")
+
+        # Map author name properly, recognizing Lord Kieran (Zahamaru) by ID
+        author_identifier = message.author.name
+        if message.author.id == KIERAN_USER_ID:
+            author_identifier = "Lord Kieran (Zahamaru)"
 
         content_payload = []
-        text_prompt = f"{context_memories}\n\nUser ({message.author.name}): {message.content}"
+        text_prompt = f"{context_memories}\n\nUser ({author_identifier}): {message.content}"
         content_payload.append(text_prompt)
 
         # Download and include any image or video attachments
@@ -334,7 +346,7 @@ async def searchmem(ctx, *, query: str):
             rows = await conn.fetch(
                 """
                 SELECT content FROM marvin_episodes 
-                ORDER BY embedding <=> $1::vector 
+                ORDER BY embedding <=> CAST($1 AS vector) 
                 LIMIT 5;
                 """,
                 vector_str
