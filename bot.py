@@ -359,6 +359,35 @@ async def searchmem(ctx, *, query: str):
     except Exception as e:
         await ctx.send(f"Error scanning memories: {e}")
 
+@bot.command(name="recallall")
+async def recallall(ctx):
+    """Fetches and displays all saved memories from the database."""
+    if not DB_POOL:
+        await ctx.send("Database pool isn't connected right now, dude!")
+        return
+
+    try:
+        async with DB_POOL.acquire() as conn:
+            rows = await conn.fetch("SELECT speaker, content FROM marvin_episodes ORDER BY id ASC;")
+            if rows:
+                memories_list = []
+                for idx, r in enumerate(rows, 1):
+                    memories_list.append(f"**{idx}.** [{r['speaker']}] {r['content']}")
+                
+                full_text = "\n".join(memories_list)
+                if len(full_text) > 1900:
+                    chunks = [full_text[i:i+1900] for i in range(0, len(full_text), 1900)]
+                    await ctx.send("🧠 **Full Memory Core Dump:**")
+                    for chunk in chunks:
+                        await ctx.send(chunk)
+                else:
+                    await ctx.send(f"🧠 **Full Memory Core Dump:**\n{full_text}")
+            else:
+                await ctx.send("🧠 The memory core is completely empty right now!")
+    except Exception as e:
+        print(f"⚠️ ERROR in recallall: {e}")
+        await ctx.send(f"Error fetching all memories: {e}")
+
 async def init_db():
     async with DB_POOL.acquire() as conn:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
