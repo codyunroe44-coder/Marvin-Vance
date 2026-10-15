@@ -66,8 +66,9 @@ ADMIN_IDS = [
 
 KIERAN_USER_ID = 562275970103509014
 
-# Per-channel active states (False by default until !start is called)
+# Per-channel active states, short-term chat history buffers
 channel_active_states = {}
+chat_sessions = {}
 
 # ---------------------------------------------------------
 # SYSTEM INSTRUCTION
@@ -165,20 +166,33 @@ async def on_message(message):
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
+    session_key = message.author.id if is_dm else channel_id
+
     try:
+        # 1. Pull relevant long-term memories via vector search
         context_memories = ""
         if DB_POOL:
             try:
                 user_embedding = await get_voyage_embedding(message.content or "Media")
                 vector_str = "[" + ",".join(map(str, embedding)) + "]"
                 async with DB_POOL.acquire() as conn:
-                    rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY embedding <=> CAST($1 AS vector) LIMIT 3;", vector_str)
+                    rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY embedding <=> CAST($1 AS vector) LIMIT 4;", vector_str)
                     if rows:
-                        context_memories = "\nRetrieved Memories:\n" + "\n".join([f"- {r['content']}" for r in rows])
+                        context_memories = "\nRetrieved Long-Term Memories:\n" + "\n".join([f"- {r['content']}" for r in rows])
             except Exception as e:
-                print(f"Memory error: {e}")
+                print(f"Memory retrieval error: {e}")
 
         author_identifier = "Lord Kieran (Zahamaru)" if message.author.id == KIERAN_USER_ID else message.author.name
+
+        # 2. Maintain short-term chat context buffer
+        if session_key not in chat_sessions:
+            chat_sessions[session_key] = ai_client.chats.create(
+                model='gemini-3.8-flash',
+                config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
+            )
+        
+        chat = chat_sessions[session_key]
+
         content_payload = [f"{context_memories}\n\nUser ({author_identifier}): {message.content}"]
 
         for attachment in message.attachments:
@@ -186,16 +200,29 @@ async def on_message(message):
                 media_bytes = await attachment.read()
                 content_payload.append(types.Part.from_bytes(data=media_bytes, mime_type=attachment.content_type or 'image/png'))
 
-        response = ai_client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=content_payload,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION),
-        )
+        response = chat.send_message(content_payload)
         
         if response and response.text:
             await message.channel.send(response.text)
+
+            # 3. Automatically store significant conversation turns into long-term database memory
+            if DB_POOL and len(message.content) > 15:
+                try:
+                    memory_to_store = f"{author_identifier} mentioned: {message.content}"
+                    embedding = await get_voyage_embedding(memory_to_store)
+                    vector_str = "[" + ",".join(map(str, embedding)) + "]"
+                    async with DB_POOL.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO marvin_episodes (speaker, content, embedding) VALUES ($1, $2, CAST($3 AS vector));",
+                            author_identifier, memory_to_store, vector_str
+                        )
+                except Exception as e:
+                    print(f"Auto-memory storage error: {e}")
+
     except Exception as e:
         print(f"Gemini error: {e}")
+        if session_key in chat_sessions:
+            del chat_sessions[session_key]
 
 @bot.command(name="start")
 async def start_bot(ctx):
@@ -216,7 +243,7 @@ async def stop_bot(ctx):
 
 
 # ---------------------------------------------------------
-# DIRECT TOPIC-DRIVEN SYNTHWAVE PRODUCTION (!FREESTYLE)
+# STRUCTURED TOPIC-DRIVEN SYNTHWAVE PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
 async def generate_marvin_custom_song(topic: str, filename="marvin_synthwave_song.mp3"):
     try:
