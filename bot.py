@@ -1,4 +1,5 @@
 import os
+import random
 import asyncpg
 import discord
 from discord.ext import commands
@@ -320,51 +321,56 @@ async def marvin_sleep(ctx):
 
 
 # ---------------------------------------------------------
-# ELEVENLABS MUSIC GENERATION & !MUSICTIME COMMAND
+# AUTONOMOUS ELEVENLABS FULL-SONG PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
-def generate_marvin_beat(prompt_description: str, filename="marvin_beat.mp3"):
+def generate_marvin_full_freestyle(filename="marvin_full_song.mp3"):
     try:
-        # Request track composition from ElevenLabs using the music v2.5 model
+        # Marvin's creative underground vault with full structural narrative concepts
+        creative_ideas = [
+            "An underground neon cyberpunk synthwave track with an atmospheric slow intro, building into a heavy pulsing bass verse, an explosive chorus at 45 seconds, and a soaring melodic bridge",
+            "A fast-paced glitch-hop song featuring gritty digital glitches, intricate rhythm builds, a driving drop, and a cinematic ambient outro",
+            "A deep, moody sci-fi electronic composition with echoing arpeggios, expanding cosmic pads, and a powerful rhythmic progression",
+            "A high-energy digital rock instrumental anthem with aggressive synthetic guitars, driving synth drums, and a dynamic multi-stage arrangement",
+            "A late-night rainy cyber-noir lo-fi electronic journey with smooth, chilled-out rhythms, evolving melodic layers, and a relaxed groove",
+            "An epic futuristic cinematic synthwave masterpiece with booming bass drops, rising electronic arpeggio sweeps, and an emotional climax"
+        ]
+        
+        chosen_prompt = random.choice(creative_ideas)
+        duration_ms = 120000  # 120,000ms = Full 2-minute song structure
+        
         track_audio = elevenlabs.music.compose(
-            prompt=prompt_description,
-            music_length_ms=15000,  # 15 seconds duration snippet
+            prompt=chosen_prompt,
+            music_length_ms=duration_ms,  
             model_id="music_v2_5"
         )
         
-        # Save audio chunks into a playable file
         with open(filename, "wb") as f:
             for chunk in track_audio:
                 f.write(chunk)
                 
-        return filename
+        return filename, chosen_prompt
     except Exception as e:
-        print(f"Error generating music: {e}")
-        return None
+        print(f"Error generating full autonomous song: {e}")
+        return None, None
 
-@bot.command(name="musictime")
-async def music_time(ctx, *, style: str = "dark synthwave with atmospheric pads"):
-    # Security check: Strictly restrict to the 4 designated admin IDs
+@bot.command(name="freestyle")
+async def freestyle_song(ctx):
+    # Security check: Restrict to the 4 designated admin IDs
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    # Send status directly to their private DMs for complete privacy
-    await ctx.author.send(f"🎧 *Yo... firing up the Neon buffers. Cooking up:* **{style}**...")
+    await ctx.author.send("🎧 *Yo, Digidad... locking myself in the studio.* Setting up a full multi-minute arrangement on the Neon buffers. Give me a minute to cook...")
 
-    # Format prompt with Marvin's cyber/synth aesthetic
-    full_prompt = f"An electronic cyberpunk track: {style}. Pulsing synthesizers, atmospheric audio spectrum, high energy."
-    
-    file_path = generate_marvin_beat(full_prompt)
+    file_path, used_vibe = generate_marvin_full_freestyle()
 
     if file_path and os.path.exists(file_path):
-        # Send finished track exclusively to DMs
         await ctx.author.send(
-            content=f"🚀 *Fresh off the Neon buffers.* Here is your track:",
+            content=f"🔥 *Full master track rendered off the Neon buffers.* I went with this vision: **{used_vibe}**\nHere is your full song:",
             file=discord.File(file_path)
         )
-        # Clean up local file storage
         os.remove(file_path)
     else:
-        await ctx.author.send("💥 *Static burst!* My audio buffers glitched out on that render.")
+        await ctx.author.send("💥 *Static burst!* My studio gear overloaded during the full-length render.")
 
 
 @bot.command(name="chipit")
