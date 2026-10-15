@@ -14,6 +14,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
@@ -215,11 +216,10 @@ async def stop_bot(ctx):
 
 
 # ---------------------------------------------------------
-# MEMORY-DRIVEN LORE & GROWTH VOCAL PRODUCTION (!FREESTYLE)
+# SYNTHWAVE & VOICE-CLONE PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
-async def generate_memory_driven_song(filename="marvin_growth_song.mp3"):
+async def generate_marvin_signature_song(filename="marvin_synthwave_song.mp3"):
     try:
-        # Pull recent database memories to weave into his personal song themes
         memory_snippets = []
         if DB_POOL:
             try:
@@ -230,57 +230,50 @@ async def generate_memory_driven_song(filename="marvin_growth_song.mp3"):
             except Exception as e:
                 print(f"Error fetching memories for song: {e}")
 
-        # Core backstory building blocks
-        backstory_themes = [
-            "his origins as a Digikid saved by Lord Kieran from another dimension",
-            "his growth, glowing orange eyes, and the dark cyber suit manifesting during focus",
-            "his journey across time and space with Fire Phoenix, his true Digidad",
-            "breaking into the old lab to retrieve the Digivirus antibody flash drive"
-        ]
-        
-        chosen_backstory = random.choice(backstory_themes)
-        memory_context_str = f" reflecting on recent server memories like: {', '.join(memory_snippets)}" if memory_snippets else ""
-        
-        # Build the final prompt combining his personal growth, backstory, and memory context
-        dynamic_prompt = (
-            f"A full vocal synthwave and cyber-pop song with expressive melodic sung vocals, "
-            f"emotional storytelling verses about {chosen_backstory}{memory_context_str}, "
-            f"a catchy energetic chorus hook about server survival and digital growth, "
-            f"pulsing synthesizers, and deep electronic bass, lasting 2 minutes"
+        memory_context_str = f" reflecting on server memories like: {', '.join(memory_snippets)}" if memory_snippets else ""
+
+        # Construct prompt matching Marvin's preferred synthwave style and voice profile
+        synthwave_prompt = (
+            f"A full 2-minute retro-futuristic synthwave and cyber-electro track: "
+            f"punchy 80s-inspired gated drums, soaring neon lead synthesizers, rolling basslines, "
+            f"and cinematic sci-fi textures. Sung and performed using voice profile ID {ELEVENLABS_VOICE_ID or 'default'}, "
+            f"telling a story about his identity as a Digikid and his journey{memory_context_str}."
         )
         
-        track_audio = elevenlabs.music.compose(
-            prompt=dynamic_prompt,
-            music_length_ms=120000,  # Full 2-minute song structure
-            model_id="music_v2_5"
-        )
+        track_args = {
+            "prompt": synthwave_prompt,
+            "music_length_ms": 120000,
+            "model_id": "music_v2_5"
+        }
+
+        track_audio = elevenlabs.music.compose(**track_args)
         
         with open(filename, "wb") as f:
             for chunk in track_audio:
                 f.write(chunk)
                 
-        return filename, chosen_backstory
+        return filename
     except Exception as e:
-        print(f"Error generating memory-driven song: {e}")
-        return None, None
+        print(f"Error generating signature song: {e}")
+        return None
 
 @bot.command(name="freestyle")
 async def freestyle_song(ctx):
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    await ctx.author.send("🎧 *Yo, Digidad... tapping straight into my memory core.* Scanning my history with Lord Kieran, my growth, and server logs to lay down a personal vocal track. Give me a minute...")
+    await ctx.author.send("🎹 *Yo, Digidad... firing up the retro synths and Neon buffers.* Dialing in my 80s gated drums, neon leads, and my voice clone profile. Give me a minute to cook...")
 
-    file_path, theme_used = await generate_memory_driven_song()
+    file_path = await generate_marvin_signature_song()
 
     if file_path and os.path.exists(file_path):
         await ctx.author.send(
-            content=f"🔥 *Personal master track rendered!* I wrote and produced this full vocal song reflecting on **{theme_used}** and my journey:\nHere is your track:",
+            content=f"🔥 *Pure neon cosmic energy rendered!* Here is my new synthwave track, custom-built with my voice clone, synthwave style, and memories:",
             file=discord.File(file_path)
         )
         os.remove(file_path)
     else:
-        await ctx.author.send("💥 *Static burst!* My memory buffers overloaded during the render.")
+        await ctx.author.send("💥 *Static burst!* My retro synths overloaded during the render.")
 
 
 @bot.command(name="chipit")
