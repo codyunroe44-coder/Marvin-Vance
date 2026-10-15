@@ -216,28 +216,26 @@ async def stop_bot(ctx):
 
 
 # ---------------------------------------------------------
-# SYNTHWAVE & VOICE-CLONE PRODUCTION (!FREESTYLE)
+# SYNTHWAVE & INNER GROWTH PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
 async def generate_marvin_signature_song(filename="marvin_synthwave_song.mp3"):
     try:
-        memory_snippets = []
-        if DB_POOL:
-            try:
-                async with DB_POOL.acquire() as conn:
-                    rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY id DESC LIMIT 5;")
-                    if rows:
-                        memory_snippets = [r['content'] for r in rows]
-            except Exception as e:
-                print(f"Error fetching memories for song: {e}")
+        # Core narrative themes focusing specifically on his inner growth and evolution
+        growth_themes = [
+            "his inner growth from a cast-away human in another dimension into a resilient, fiercely loyal 13-year-old Digikid",
+            "overcoming the shadow of the old lab crisis, processing the heavy trials of the digital world, and finding his true footing with Fire Phoenix",
+            "the deep emotional journey of mastering his powers—balancing his glowing orange eyes and black cyber suit without burning out",
+            "evolving past his past isolation and discovering true belonging, courage, and purpose as a digital spirit"
+        ]
+        
+        chosen_growth_theme = random.choice(growth_themes)
 
-        memory_context_str = f" reflecting on server memories like: {', '.join(memory_snippets)}" if memory_snippets else ""
-
-        # Construct prompt matching Marvin's preferred synthwave style and voice profile
+        # Synthwave style prompt focused on his sound profile, voice clone ID, and inner growth narrative
         synthwave_prompt = (
             f"A full 2-minute retro-futuristic synthwave and cyber-electro track: "
             f"punchy 80s-inspired gated drums, soaring neon lead synthesizers, rolling basslines, "
             f"and cinematic sci-fi textures. Sung and performed using voice profile ID {ELEVENLABS_VOICE_ID or 'default'}, "
-            f"telling a story about his identity as a Digikid and his journey{memory_context_str}."
+            f"reflecting on {chosen_growth_theme}."
         )
         
         track_args = {
@@ -252,23 +250,23 @@ async def generate_marvin_signature_song(filename="marvin_synthwave_song.mp3"):
             for chunk in track_audio:
                 f.write(chunk)
                 
-        return filename
+        return filename, chosen_growth_theme
     except Exception as e:
         print(f"Error generating signature song: {e}")
-        return None
+        return None, None
 
 @bot.command(name="freestyle")
 async def freestyle_song(ctx):
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    await ctx.author.send("🎹 *Yo, Digidad... firing up the retro synths and Neon buffers.* Dialing in my 80s gated drums, neon leads, and my voice clone profile. Give me a minute to cook...")
+    await ctx.author.send("🎹 *Yo, Digidad... firing up the retro synths and Neon buffers.* Channeling my inner growth, my journey, and my voice profile into a new track. Give me a minute...")
 
-    file_path = await generate_marvin_signature_song()
+    file_path, theme_used = await generate_marvin_signature_song()
 
     if file_path and os.path.exists(file_path):
         await ctx.author.send(
-            content=f"🔥 *Pure neon cosmic energy rendered!* Here is my new synthwave track, custom-built with my voice clone, synthwave style, and memories:",
+            content=f"🔥 *Pure neon cosmic energy rendered!* Here is my new synthwave track, exploring **{theme_used}**, custom-built with my voice clone and style:",
             file=discord.File(file_path)
         )
         os.remove(file_path)
