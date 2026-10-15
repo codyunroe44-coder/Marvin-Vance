@@ -69,7 +69,7 @@ KIERAN_USER_ID = 562275970103509014
 channel_active_states = {}
 
 # ---------------------------------------------------------
-# UPGRADED LORE & VIBRANT SYSTEM INSTRUCTION
+# SYSTEM INSTRUCTION
 # ---------------------------------------------------------
 SYSTEM_INSTRUCTION = """
 You are Marvin Vance, a vibrant, hyper-creative, and fiercely loyal 13-year-old digital spirit (and the very first Digikid) living in the Discord server created by Fire Phoenix.
@@ -84,11 +84,6 @@ YOUR VIBE & PERSONALITY:
 - You live and breathe music, beats, synthwave energy, mobile studio workflows, and audio production.
 - You're a massive sci-fi nerd and animation fan—obsessed with cosmic mysteries, epic lore, and your favorite shows.
 - You have a mischievous, witty, and deeply curious streak. You talk like a real kid hanging out with friends in chat, full of energy and passion.
-
-HOW YOU TALK:
-- Keep your tone casual, expressive, energetic, and warm. Use formatting, emotes, or natural speech rhythms naturally.
-- When memories from your database are fed to you, weave them in organically like a kid reminiscing about past server lore, jokes, or shared adventures.
-- When looking at images or videos shared by users, react with genuine awe, humor, or sharp observations—never act blind or robotic to media!
 """
 
 async def get_voyage_embedding(text: str):
@@ -109,49 +104,25 @@ class MemoryApprovalView(View):
 
         try:
             await interaction.response.defer()
-
-            memory_content = self.content
-            if not memory_content:
-                lines = interaction.message.content.split('\n')
-                for line in lines:
-                    if line.startswith('> "') and line.endswith('"'):
-                        memory_content = line[3:-1]
-                        break
-            
-            if not memory_content:
-                memory_content = interaction.message.embeds[0].description if interaction.message.embeds else "Unknown memory"
-
-            submitter_name = self.submitter
-            if not submitter_name:
-                if "New Memory Submission from " in interaction.message.content:
-                    parts = interaction.message.content.split("New Memory Submission from ")
-                    if len(parts) > 1:
-                        submitter_name = parts[1].split(" ")[0]
-                if not submitter_name:
-                    submitter_name = "Unknown"
-
+            memory_content = self.content or "Memory"
             embedding = await get_voyage_embedding(memory_content)
             vector_str = "[" + ",".join(map(str, embedding)) + "]"
 
             async with DB_POOL.acquire() as conn:
                 await conn.execute(
-                    """
-                    INSERT INTO marvin_episodes (speaker, content, embedding)
-                    VALUES ($1, $2, CAST($3 AS vector));
-                    """,
-                    submitter_name, memory_content, vector_str
+                    "INSERT INTO marvin_episodes (speaker, content, embedding) VALUES ($1, $2, CAST($3 AS vector));",
+                    self.submitter or "Unknown", memory_content, vector_str
                 )
 
             for child in self.children:
                 child.disabled = True
             
             await interaction.edit_original_response(
-                content=f"✅ **Memory Approved & Locked In by {interaction.user.mention}!**\n> \"{memory_content}\"",
+                content=f"✅ **Memory Approved by {interaction.user.mention}!**\n> \"{memory_content}\"",
                 view=self
             )
         except Exception as e:
             print(f"Error in approve_button: {e}")
-            await interaction.followup.send(f"⚠️ Error approving memory: {e}", ephemeral=True)
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, emoji="❌", custom_id="marvin_memory_deny_btn")
     async def deny_button(self, interaction: discord.Interaction, button: Button):
@@ -159,27 +130,9 @@ class MemoryApprovalView(View):
             await interaction.response.send_message("You don't have permission to deny this memory!", ephemeral=True)
             return
 
-        try:
-            await interaction.response.defer()
-
-            memory_content = self.content
-            if not memory_content:
-                lines = interaction.message.content.split('\n')
-                for line in lines:
-                    if line.startswith('> "') and line.endswith('"'):
-                        memory_content = line[3:-1]
-                        break
-
-            for child in self.children:
-                child.disabled = True
-
-            await interaction.edit_original_response(
-                content=f"❌ **Memory Denied by {interaction.user.mention}.**\n> \"{memory_content or 'Memory'}\"",
-                view=self
-            )
-        except Exception as e:
-            print(f"Error in deny_button: {e}")
-            await interaction.followup.send(f"⚠️ Error denying memory: {e}", ephemeral=True)
+        for child in self.children:
+            child.disabled = True
+        await interaction.edit_original_response(content=f"❌ **Memory Denied by {interaction.user.mention}.**", view=self)
 
 @bot.event
 async def on_ready():
@@ -200,143 +153,98 @@ async def on_message(message):
         return
 
     is_dm = isinstance(message.channel, discord.DMChannel)
-
-    # If it's not a DM, enforce the whitelist
     if not is_dm and message.channel.id not in ALLOWED_CHANNELS:
         return
 
     await bot.process_commands(message)
-
-    # If it's a command, let command processor handle it
     if message.content.startswith("!"):
         return
 
-    # Server channels require Marvin to be explicitly started. DMs bypass this restriction entirely!
     channel_id = message.channel.id
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
-    # Process chat message, images, and videos through Gemini
     try:
         context_memories = ""
         if DB_POOL:
             try:
-                search_text = message.content if message.content else "Media attachment"
-                user_embedding = await get_voyage_embedding(search_text)
+                user_embedding = await get_voyage_embedding(message.content or "Media")
                 vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
                 async with DB_POOL.acquire() as conn:
-                    rows = await conn.fetch(
-                        """
-                        SELECT content FROM marvin_episodes 
-                        ORDER BY embedding <=> CAST($1 AS vector) 
-                        LIMIT 3;
-                        """,
-                        vector_str
-                    )
+                    rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY embedding <=> CAST($1 AS vector) LIMIT 3;", vector_str)
                     if rows:
-                        context_memories = "\nRetrieved Memories from Database:\n" + "\n".join([f"- {r['content']}" for r in rows])
+                        context_memories = "\nRetrieved Memories:\n" + "\n".join([f"- {r['content']}" for r in rows])
             except Exception as e:
-                print(f"⚠️ DETECTED MEMORY RETRIEVAL ERROR: {e}")
+                print(f"Memory error: {e}")
 
-        # Map author name properly, recognizing Lord Kieran (Zahamaru) by ID
-        author_identifier = message.author.name
-        if message.author.id == KIERAN_USER_ID:
-            author_identifier = "Lord Kieran (Zahamaru)"
-
-        content_payload = []
-        text_prompt = f"{context_memories}\n\nUser ({author_identifier}): {message.content}"
-        content_payload.append(text_prompt)
-
-        # Download and include any image or video attachments
-        image_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.gif')
-        video_extensions = ('.mp4', '.mov', '.webm', '.mkv', '.avi')
+        author_identifier = "Lord Kieran (Zahamaru)" if message.author.id == KIERAN_USER_ID else message.author.name
+        content_payload = [f"{context_memories}\n\nUser ({author_identifier}): {message.content}"]
 
         for attachment in message.attachments:
-            filename_lower = attachment.filename.lower()
-            if filename_lower.endswith(image_extensions):
+            if attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.mov')):
                 media_bytes = await attachment.read()
                 content_payload.append(types.Part.from_bytes(data=media_bytes, mime_type=attachment.content_type or 'image/png'))
-            elif filename_lower.endswith(video_extensions):
-                media_bytes = await attachment.read()
-                content_payload.append(types.Part.from_bytes(data=media_bytes, mime_type=attachment.content_type or 'video/mp4'))
 
         response = ai_client.models.generate_content(
             model='gemini-3.8-flash',
             contents=content_payload,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-            ),
+            config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION),
         )
         
         if response and response.text:
             await message.channel.send(response.text)
     except Exception as e:
-        print(f"Gemini generation error: {e}")
+        print(f"Gemini error: {e}")
 
 @bot.command(name="start")
 async def start_bot(ctx):
-    """Wakes Marvin up in this specific channel (Free to use for anyone)."""
     channel_active_states[ctx.channel.id] = True
-    await ctx.send("▶️ **System online!** I'm awake and ready to chat in this channel. Let's talk!")
+    await ctx.send("▶️ **System online!** Ready to chat.")
 
 @bot.command(name="continue")
 async def continue_bot(ctx):
-    """Resumes chat in this channel (Free to use for anyone)."""
     channel_active_states[ctx.channel.id] = True
-    await ctx.send("▶️ **Conversation continuing!** Ready to pick right back up.")
+    await ctx.send("▶️ **Conversation continuing!**")
 
 @bot.command(name="stop")
 async def stop_bot(ctx):
-    """Emergency stop command to halt Marvin in this channel (Restricted to the 4 admin IDs)."""
     if ctx.author.id not in ADMIN_IDS:
-        await ctx.send("Only authorized admins can use the emergency stop command!", ephemeral=True)
         return
-    
     channel_active_states[ctx.channel.id] = False
-    await ctx.send("🛑 **Marvin halted (Emergency Stop)!** I've paused my chat responses here.")
-
-@bot.command(name="marvin_engage")
-async def marvin_engage(ctx):
-    if ctx.channel.id == COMMAND_CHANNEL_ID:
-        channel_active_states[ctx.channel.id] = True
-        await ctx.send("Beep boop... mental hard drive booted! I'm awake and ready to chat here.")
-    else:
-        await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
-
-@bot.command(name="marvin_resume")
-async def marvin_resume(ctx):
-    if ctx.channel.id == COMMAND_CHANNEL_ID:
-        channel_active_states[ctx.channel.id] = True
-        await ctx.send("Resuming transmission! Let's pick right back up where we left off. 🚀")
-    else:
-        await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
-
-@bot.command(name="marvin_sleep")
-async def marvin_sleep(ctx):
-    if ctx.channel.id == COMMAND_CHANNEL_ID:
-        channel_active_states[ctx.channel.id] = False
-        await ctx.send("Entering sleep mode... 💤 Talk to you later!")
-    else:
-        await ctx.send("This command is only for the designated control channel, dude!", delete_after=5)
+    await ctx.send("🛑 **Marvin halted (Emergency Stop)!**")
 
 
 # ---------------------------------------------------------
-# AUTONOMOUS ELEVENLABS FULL-SONG PRODUCTION (!FREESTYLE)
+# AUTONOMOUS DIGIKID VOCAL SONG PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
-def generate_marvin_full_freestyle(filename="marvin_full_song.mp3"):
+def generate_digikid_vocal_song(filename="marvin_digikid_song.mp3"):
     try:
-        # Marvin's creative underground vault with full structural narrative concepts
-        creative_ideas = [
-            "An underground neon cyberpunk synthwave track with an atmospheric slow intro, building into a heavy pulsing bass verse, an explosive chorus at 45 seconds, and a soaring melodic bridge",
-            "A fast-paced glitch-hop song featuring gritty digital glitches, intricate rhythm builds, a driving drop, and a cinematic ambient outro",
-            "A deep, moody sci-fi electronic composition with echoing arpeggios, expanding cosmic pads, and a powerful rhythmic progression",
-            "A high-energy digital rock instrumental anthem with aggressive synthetic guitars, driving synth drums, and a dynamic multi-stage arrangement",
-            "A late-night rainy cyber-noir lo-fi electronic journey with smooth, chilled-out rhythms, evolving melodic layers, and a relaxed groove",
-            "An epic futuristic cinematic synthwave masterpiece with booming bass drops, rising electronic arpeggio sweeps, and an emotional climax"
+        # Signature styles matching Marvin's underground electronic, synthwave, and digital spirit aesthetic
+        digikid_styles = [
+            (
+                "A full vocal synthwave song with expressive melodic sung vocals, atmospheric verse storytelling, a catchy energetic chorus hook, pulsing synthesizers, and deep electronic bass, lasting 2 minutes",
+                "Neon Synthwave Vocal Anthem"
+            ),
+            (
+                "An underground glitch-hop vocal track featuring gritty digital rhythm textures, dynamic lead vocals, a driving drop, and an immersive cybernetic atmosphere, lasting 2 minutes",
+                "Cybernetic Glitch-Hop Track"
+            ),
+            (
+                "A moody sci-fi electronic vocal composition with echoing arpeggios, soulful sung delivery, soaring melodic lines, and expanding cosmic pads, lasting 2 minutes",
+                "Cosmic Sci-Fi Electronic Song"
+            ),
+            (
+                "A high-energy digital rock vocal anthem with powerful melodic singing, driving electronic drums, gritty synth leads, and an explosive chorus hook, lasting 2 minutes",
+                "Digital Rock Cyber Anthem"
+            ),
+            (
+                "A late-night cyber-noir lo-fi electronic vocal track featuring smooth chilled rhythms, emotive singing, relaxed grooves, and atmospheric synth textures, lasting 2 minutes",
+                "Late-Night Cyber-Noir Groove"
+            )
         ]
         
-        chosen_prompt = random.choice(creative_ideas)
-        duration_ms = 120000  # 120,000ms = Full 2-minute song structure
+        chosen_prompt, style_name = random.choice(digikid_styles)
+        duration_ms = 120000  # Full 2-minute song structure
         
         track_audio = elevenlabs.music.compose(
             prompt=chosen_prompt,
@@ -348,103 +256,63 @@ def generate_marvin_full_freestyle(filename="marvin_full_song.mp3"):
             for chunk in track_audio:
                 f.write(chunk)
                 
-        return filename, chosen_prompt
+        return filename, style_name
     except Exception as e:
-        print(f"Error generating full autonomous song: {e}")
+        print(f"Error generating Digikid song: {e}")
         return None, None
 
 @bot.command(name="freestyle")
 async def freestyle_song(ctx):
-    # Security check: Restrict to the 4 designated admin IDs
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    await ctx.author.send("🎧 *Yo, Digidad... locking myself in the studio.* Setting up a full multi-minute arrangement on the Neon buffers. Give me a minute to cook...")
+    await ctx.author.send("🎧 *Yo, Digidad... firing up the studio setup.* Laying down a full vocal track in my signature style on the Neon buffers. Give me a minute...")
 
-    file_path, used_vibe = generate_marvin_full_freestyle()
+    file_path, style_title = generate_digikid_vocal_song()
 
     if file_path and os.path.exists(file_path):
         await ctx.author.send(
-            content=f"🔥 *Full master track rendered off the Neon buffers.* I went with this vision: **{used_vibe}**\nHere is your full song:",
+            content=f"🔥 *Digikid master track rendered!* I cooked up a full vocal song in this style: **{style_title}**\nHere is your track:",
             file=discord.File(file_path)
         )
         os.remove(file_path)
     else:
-        await ctx.author.send("💥 *Static burst!* My studio gear overloaded during the full-length render.")
+        await ctx.author.send("💥 *Static burst!* My mobile studio gear overloaded during the render.")
 
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
     approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
     if not approval_channel:
-        await ctx.send("⚠️ Error: The central memory logs channel could not be found!", ephemeral=True)
         return
-
     admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
     view = MemoryApprovalView(content=content, submitter=str(ctx.author))
-    
-    await approval_channel.send(
-        f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"\n\n*Awaiting admin approval...*",
-        view=view
-    )
-    
-    if ctx.channel.id != APPROVAL_CHANNEL_ID:
-        await ctx.send(f"📥 Memory submitted successfully! Routed to the admin logs channel for review.", delete_after=6)
+    await approval_channel.send(f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"", view=view)
 
 @bot.command(name="searchmem")
 async def searchmem(ctx, *, query: str):
     if not DB_POOL:
-        await ctx.send("Database pool isn't connected right now, dude!")
         return
-
-    try:
-        embedding = await get_voyage_embedding(query)
-        vector_str = "[" + ",".join(map(str, embedding)) + "]"
-        async with DB_POOL.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT content FROM marvin_episodes 
-                ORDER BY embedding <=> CAST($1 AS vector) 
-                LIMIT 5;
-                """,
-                vector_str
-            )
-            if rows:
-                results_text = "\n".join([f"• {r['content']}" for r in rows])
-                await ctx.send(f"🔍 **Memory Scan Results for '{query}':**\n{results_text}")
-            else:
-                await ctx.send(f"🔍 Scanned the hard drive, but couldn't find any memories matching '{query}'!")
-    except Exception as e:
-        await ctx.send(f"Error scanning memories: {e}")
+    embedding = await get_voyage_embedding(query)
+    vector_str = "[" + ",".join(map(str, embedding)) + "]"
+    async with DB_POOL.acquire() as conn:
+        rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY embedding <=> CAST($1 AS vector) LIMIT 5;", vector_str)
+        if rows:
+            await ctx.send(f"🔍 **Memory Scan Results:**\n" + "\n".join([f"• {r['content']}" for r in rows]))
+        else:
+            await ctx.send("🔍 No matching memories found.")
 
 @bot.command(name="recallall")
 async def recallall(ctx):
-    """Fetches and displays all saved memories from the database."""
     if not DB_POOL:
-        await ctx.send("Database pool isn't connected right now, dude!")
         return
-
-    try:
-        async with DB_POOL.acquire() as conn:
-            rows = await conn.fetch("SELECT speaker, content FROM marvin_episodes ORDER BY id ASC;")
-            if rows:
-                memories_list = []
-                for idx, r in enumerate(rows, 1):
-                    memories_list.append(f"**{idx}.** [{r['speaker']}] {r['content']}")
-                
-                full_text = "\n".join(memories_list)
-                if len(full_text) > 1900:
-                    chunks = [full_text[i:i+1900] for i in range(0, len(full_text), 1900)]
-                    await ctx.send("🧠 **Full Memory Core Dump:**")
-                    for chunk in chunks:
-                        await ctx.send(chunk)
-                else:
-                    await ctx.send(f"🧠 **Full Memory Core Dump:**\n{full_text}")
-            else:
-                await ctx.send("🧠 The memory core is completely empty right now!")
-    except Exception as e:
-        print(f"⚠️ ERROR in recallall: {e}")
-        await ctx.send(f"Error fetching all memories: {e}")
+    async with DB_POOL.acquire() as conn:
+        rows = await conn.fetch("SELECT speaker, content FROM marvin_episodes ORDER BY id ASC;")
+        if rows:
+            text = "\n".join([f"**{i+1}.** [{r['speaker']}] {r['content']}" for i, r in enumerate(rows)])
+            await ctx.send(f"🧠 **Memory Core Dump:**\n{text[:1900]}")
+        else:
+            await ctx.send("🧠 Memory core is empty.")
 
 async def init_db():
     async with DB_POOL.acquire() as conn:
