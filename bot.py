@@ -216,26 +216,16 @@ async def stop_bot(ctx):
 
 
 # ---------------------------------------------------------
-# STRUCTURED SYNTHWAVE & GROWTH PRODUCTION (!FREESTYLE)
+# DIRECT TOPIC-DRIVEN SYNTHWAVE PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
-async def generate_marvin_signature_song(filename="marvin_synthwave_song.mp3"):
+async def generate_marvin_custom_song(topic: str, filename="marvin_synthwave_song.mp3"):
     try:
-        growth_themes = [
-            "his inner growth from a cast-away human in another dimension into a resilient, fiercely loyal 13-year-old Digikid",
-            "overcoming the shadow of the old lab crisis, processing the heavy trials of the digital world, and finding his true footing with Fire Phoenix",
-            "the deep emotional journey of mastering his powers—balancing his glowing orange eyes and black cyber suit without burning out",
-            "evolving past his past isolation and discovering true belonging, courage, and purpose as a digital spirit"
-        ]
-        
-        chosen_growth_theme = random.choice(growth_themes)
-
-        # Structured prompt blueprint defining intro, verses, chorus arrangement, and professional arrangement flow
         synthwave_prompt = (
             f"A professionally arranged, structured full 2-minute retro-futuristic synthwave and cyber-electro track "
             f"following a clear song structure (Atmospheric Intro -> Verse 1 -> Soaring Neon Chorus -> Verse 2 -> Big Chorus -> Outro). "
             f"Featuring punchy 80s-inspired gated drums, soaring neon lead synthesizers, rolling basslines, and cinematic sci-fi textures. "
             f"Sung and performed using voice profile ID {ELEVENLABS_VOICE_ID or 'default'}, "
-            f"reflecting on {chosen_growth_theme}."
+            f"telling a story about: {topic}."
         )
         
         track_args = {
@@ -250,28 +240,28 @@ async def generate_marvin_signature_song(filename="marvin_synthwave_song.mp3"):
             for chunk in track_audio:
                 f.write(chunk)
                 
-        return filename, chosen_growth_theme
+        return filename
     except Exception as e:
-        print(f"Error generating signature song: {e}")
-        return None, None
+        print(f"Error generating custom song: {e}")
+        return None
 
 @bot.command(name="freestyle")
-async def freestyle_song(ctx):
+async def freestyle_song(ctx, *, topic: str = "exploring the digital grid and neon cosmic energy"):
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    await ctx.author.send("🎹 *Yo, Digidad... setting up the song structure on the Neon buffers.* Arranging the intro, verses, and choruses with my voice profile and inner growth themes. Give me a minute...")
+    await ctx.send(f"🎹 *Yo, Digidad... topic locked:* \"{topic}\". Firing up the retro synths, structuring the verses and chorus, and loading my voice clone. Give me a minute...")
 
-    file_path, theme_used = await generate_marvin_signature_song()
+    file_path = await generate_marvin_custom_song(topic)
 
     if file_path and os.path.exists(file_path):
-        await ctx.author.send(
-            content=f"🔥 *Structured master track rendered!* Here is my new synthwave track structured with verses and choruses, exploring **{theme_used}**:",
+        await ctx.send(
+            content=f"🔥 *Custom master track rendered!* Here is my structured synthwave track about **{topic}**:",
             file=discord.File(file_path)
         )
         os.remove(file_path)
     else:
-        await ctx.author.send("💥 *Static burst!* My retro synths overloaded during the arrangement.")
+        await ctx.send("💥 *Static burst!* My retro synths overloaded during the arrangement.")
 
 
 @bot.command(name="chipit")
