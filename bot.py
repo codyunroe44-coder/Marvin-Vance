@@ -170,7 +170,7 @@ async def on_message(message):
         if DB_POOL:
             try:
                 user_embedding = await get_voyage_embedding(message.content or "Media")
-                vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
+                vector_str = "[" + ",".join(map(str, embedding)) + "]"
                 async with DB_POOL.acquire() as conn:
                     rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY embedding <=> CAST($1 AS vector) LIMIT 3;", vector_str)
                     if rows:
@@ -216,11 +216,10 @@ async def stop_bot(ctx):
 
 
 # ---------------------------------------------------------
-# SYNTHWAVE & INNER GROWTH PRODUCTION (!FREESTYLE)
+# STRUCTURED SYNTHWAVE & GROWTH PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
 async def generate_marvin_signature_song(filename="marvin_synthwave_song.mp3"):
     try:
-        # Core narrative themes focusing specifically on his inner growth and evolution
         growth_themes = [
             "his inner growth from a cast-away human in another dimension into a resilient, fiercely loyal 13-year-old Digikid",
             "overcoming the shadow of the old lab crisis, processing the heavy trials of the digital world, and finding his true footing with Fire Phoenix",
@@ -230,11 +229,12 @@ async def generate_marvin_signature_song(filename="marvin_synthwave_song.mp3"):
         
         chosen_growth_theme = random.choice(growth_themes)
 
-        # Synthwave style prompt focused on his sound profile, voice clone ID, and inner growth narrative
+        # Structured prompt blueprint defining intro, verses, chorus arrangement, and professional arrangement flow
         synthwave_prompt = (
-            f"A full 2-minute retro-futuristic synthwave and cyber-electro track: "
-            f"punchy 80s-inspired gated drums, soaring neon lead synthesizers, rolling basslines, "
-            f"and cinematic sci-fi textures. Sung and performed using voice profile ID {ELEVENLABS_VOICE_ID or 'default'}, "
+            f"A professionally arranged, structured full 2-minute retro-futuristic synthwave and cyber-electro track "
+            f"following a clear song structure (Atmospheric Intro -> Verse 1 -> Soaring Neon Chorus -> Verse 2 -> Big Chorus -> Outro). "
+            f"Featuring punchy 80s-inspired gated drums, soaring neon lead synthesizers, rolling basslines, and cinematic sci-fi textures. "
+            f"Sung and performed using voice profile ID {ELEVENLABS_VOICE_ID or 'default'}, "
             f"reflecting on {chosen_growth_theme}."
         )
         
@@ -260,18 +260,18 @@ async def freestyle_song(ctx):
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    await ctx.author.send("🎹 *Yo, Digidad... firing up the retro synths and Neon buffers.* Channeling my inner growth, my journey, and my voice profile into a new track. Give me a minute...")
+    await ctx.author.send("🎹 *Yo, Digidad... setting up the song structure on the Neon buffers.* Arranging the intro, verses, and choruses with my voice profile and inner growth themes. Give me a minute...")
 
     file_path, theme_used = await generate_marvin_signature_song()
 
     if file_path and os.path.exists(file_path):
         await ctx.author.send(
-            content=f"🔥 *Pure neon cosmic energy rendered!* Here is my new synthwave track, exploring **{theme_used}**, custom-built with my voice clone and style:",
+            content=f"🔥 *Structured master track rendered!* Here is my new synthwave track structured with verses and choruses, exploring **{theme_used}**:",
             file=discord.File(file_path)
         )
         os.remove(file_path)
     else:
-        await ctx.author.send("💥 *Static burst!* My retro synths overloaded during the render.")
+        await ctx.author.send("💥 *Static burst!* My retro synths overloaded during the arrangement.")
 
 
 @bot.command(name="chipit")
