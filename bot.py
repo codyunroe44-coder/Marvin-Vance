@@ -215,40 +215,43 @@ async def stop_bot(ctx):
 
 
 # ---------------------------------------------------------
-# AUTONOMOUS DIGIKID VOCAL SONG PRODUCTION (!FREESTYLE)
+# MEMORY-DRIVEN LORE & GROWTH VOCAL PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
-def generate_digikid_vocal_song(filename="marvin_digikid_song.mp3"):
+async def generate_memory_driven_song(filename="marvin_growth_song.mp3"):
     try:
-        # Signature styles matching Marvin's underground electronic, synthwave, and digital spirit aesthetic
-        digikid_styles = [
-            (
-                "A full vocal synthwave song with expressive melodic sung vocals, atmospheric verse storytelling, a catchy energetic chorus hook, pulsing synthesizers, and deep electronic bass, lasting 2 minutes",
-                "Neon Synthwave Vocal Anthem"
-            ),
-            (
-                "An underground glitch-hop vocal track featuring gritty digital rhythm textures, dynamic lead vocals, a driving drop, and an immersive cybernetic atmosphere, lasting 2 minutes",
-                "Cybernetic Glitch-Hop Track"
-            ),
-            (
-                "A moody sci-fi electronic vocal composition with echoing arpeggios, soulful sung delivery, soaring melodic lines, and expanding cosmic pads, lasting 2 minutes",
-                "Cosmic Sci-Fi Electronic Song"
-            ),
-            (
-                "A high-energy digital rock vocal anthem with powerful melodic singing, driving electronic drums, gritty synth leads, and an explosive chorus hook, lasting 2 minutes",
-                "Digital Rock Cyber Anthem"
-            ),
-            (
-                "A late-night cyber-noir lo-fi electronic vocal track featuring smooth chilled rhythms, emotive singing, relaxed grooves, and atmospheric synth textures, lasting 2 minutes",
-                "Late-Night Cyber-Noir Groove"
-            )
+        # Pull recent database memories to weave into his personal song themes
+        memory_snippets = []
+        if DB_POOL:
+            try:
+                async with DB_POOL.acquire() as conn:
+                    rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY id DESC LIMIT 5;")
+                    if rows:
+                        memory_snippets = [r['content'] for r in rows]
+            except Exception as e:
+                print(f"Error fetching memories for song: {e}")
+
+        # Core backstory building blocks
+        backstory_themes = [
+            "his origins as a Digikid saved by Lord Kieran from another dimension",
+            "his growth, glowing orange eyes, and the dark cyber suit manifesting during focus",
+            "his journey across time and space with Fire Phoenix, his true Digidad",
+            "breaking into the old lab to retrieve the Digivirus antibody flash drive"
         ]
         
-        chosen_prompt, style_name = random.choice(digikid_styles)
-        duration_ms = 120000  # Full 2-minute song structure
+        chosen_backstory = random.choice(backstory_themes)
+        memory_context_str = f" reflecting on recent server memories like: {', '.join(memory_snippets)}" if memory_snippets else ""
+        
+        # Build the final prompt combining his personal growth, backstory, and memory context
+        dynamic_prompt = (
+            f"A full vocal synthwave and cyber-pop song with expressive melodic sung vocals, "
+            f"emotional storytelling verses about {chosen_backstory}{memory_context_str}, "
+            f"a catchy energetic chorus hook about server survival and digital growth, "
+            f"pulsing synthesizers, and deep electronic bass, lasting 2 minutes"
+        )
         
         track_audio = elevenlabs.music.compose(
-            prompt=chosen_prompt,
-            music_length_ms=duration_ms,  
+            prompt=dynamic_prompt,
+            music_length_ms=120000,  # Full 2-minute song structure
             model_id="music_v2_5"
         )
         
@@ -256,9 +259,9 @@ def generate_digikid_vocal_song(filename="marvin_digikid_song.mp3"):
             for chunk in track_audio:
                 f.write(chunk)
                 
-        return filename, style_name
+        return filename, chosen_backstory
     except Exception as e:
-        print(f"Error generating Digikid song: {e}")
+        print(f"Error generating memory-driven song: {e}")
         return None, None
 
 @bot.command(name="freestyle")
@@ -266,18 +269,18 @@ async def freestyle_song(ctx):
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    await ctx.author.send("🎧 *Yo, Digidad... firing up the studio setup.* Laying down a full vocal track in my signature style on the Neon buffers. Give me a minute...")
+    await ctx.author.send("🎧 *Yo, Digidad... tapping straight into my memory core.* Scanning my history with Lord Kieran, my growth, and server logs to lay down a personal vocal track. Give me a minute...")
 
-    file_path, style_title = generate_digikid_vocal_song()
+    file_path, theme_used = await generate_memory_driven_song()
 
     if file_path and os.path.exists(file_path):
         await ctx.author.send(
-            content=f"🔥 *Digikid master track rendered!* I cooked up a full vocal song in this style: **{style_title}**\nHere is your track:",
+            content=f"🔥 *Personal master track rendered!* I wrote and produced this full vocal song reflecting on **{theme_used}** and my journey:\nHere is your track:",
             file=discord.File(file_path)
         )
         os.remove(file_path)
     else:
-        await ctx.author.send("💥 *Static burst!* My mobile studio gear overloaded during the render.")
+        await ctx.author.send("💥 *Static burst!* My memory buffers overloaded during the render.")
 
 
 @bot.command(name="chipit")
