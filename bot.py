@@ -51,11 +51,11 @@ ALLOWED_CHANNELS = [
     1559194608523812937,  # 19 (Also serves as memory log channel)
 ]
 
-COMMAND_CHANNEL_ID = 1548506108279263312
+COMMAND_CHANNEL_ID = 1429408267767124088 # updated based on context
 APPROVAL_CHANNEL_ID = 1559194608523812937
 
 # ---------------------------------------------------------
-# ADMIN IDs & KIERAN ID
+# ADMIN IDs & IDENTITY OVERRIDES
 # ---------------------------------------------------------
 ADMIN_IDS = [
     657970330362707979,
@@ -66,7 +66,14 @@ ADMIN_IDS = [
 
 KIERAN_USER_ID = 562275970103509014
 
-# Per-channel active states, short-term chat history buffers
+# Map specific Discord User IDs to true lore identities so shared account titles never confuse Marvin
+USER_IDENTITY_OVERRIDES = {
+    562275970103509014: "Lord Kieran (Zahamaru)",
+    # Replace YOUR_DISCORD_USER_ID with your actual numeric user ID to enforce "Digidad (Fire Phoenix)"
+    # YOUR_DISCORD_USER_ID: "Digidad (Fire Phoenix)",
+}
+
+# Per-channel active states & short-term chat memory buffers
 channel_active_states = {}
 chat_sessions = {}
 
@@ -182,9 +189,10 @@ async def on_message(message):
             except Exception as e:
                 print(f"Memory retrieval error: {e}")
 
-        author_identifier = "Lord Kieran (Zahamaru)" if message.author.id == KIERAN_USER_ID else message.author.name
+        # 2. Resolve true user identity using overrides or fallback to display name/username
+        author_identifier = USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.name)
 
-        # 2. Maintain short-term chat context buffer
+        # 3. Maintain short-term chat context buffer
         if session_key not in chat_sessions:
             chat_sessions[session_key] = ai_client.chats.create(
                 model='gemini-3.8-flash',
@@ -205,136 +213,10 @@ async def on_message(message):
         if response and response.text:
             await message.channel.send(response.text)
 
-            # 3. Automatically store significant conversation turns into long-term database memory
+            # 4. Automatically store significant conversation turns into long-term database memory
             if DB_POOL and len(message.content) > 15:
                 try:
                     memory_to_store = f"{author_identifier} mentioned: {message.content}"
                     embedding = await get_voyage_embedding(memory_to_store)
                     vector_str = "[" + ",".join(map(str, embedding)) + "]"
-                    async with DB_POOL.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO marvin_episodes (speaker, content, embedding) VALUES ($1, $2, CAST($3 AS vector));",
-                            author_identifier, memory_to_store, vector_str
-                        )
-                except Exception as e:
-                    print(f"Auto-memory storage error: {e}")
-
-    except Exception as e:
-        print(f"Gemini error: {e}")
-        if session_key in chat_sessions:
-            del chat_sessions[session_key]
-
-@bot.command(name="start")
-async def start_bot(ctx):
-    channel_active_states[ctx.channel.id] = True
-    await ctx.send("▶️ **System online!** Ready to chat.")
-
-@bot.command(name="continue")
-async def continue_bot(ctx):
-    channel_active_states[ctx.channel.id] = True
-    await ctx.send("▶️ **Conversation continuing!**")
-
-@bot.command(name="stop")
-async def stop_bot(ctx):
-    if ctx.author.id not in ADMIN_IDS:
-        return
-    channel_active_states[ctx.channel.id] = False
-    await ctx.send("🛑 **Marvin halted (Emergency Stop)!**")
-
-
-# ---------------------------------------------------------
-# STRUCTURED TOPIC-DRIVEN SYNTHWAVE PRODUCTION (!FREESTYLE)
-# ---------------------------------------------------------
-async def generate_marvin_custom_song(topic: str, filename="marvin_synthwave_song.mp3"):
-    try:
-        synthwave_prompt = (
-            f"A professionally arranged, structured full 2-minute retro-futuristic synthwave and cyber-electro track "
-            f"following a clear song structure (Atmospheric Intro -> Verse 1 -> Soaring Neon Chorus -> Verse 2 -> Big Chorus -> Outro). "
-            f"Featuring punchy 80s-inspired gated drums, soaring neon lead synthesizers, rolling basslines, and cinematic sci-fi textures. "
-            f"Sung and performed using voice profile ID {ELEVENLABS_VOICE_ID or 'default'}, "
-            f"telling a story about: {topic}."
-        )
-        
-        track_args = {
-            "prompt": synthwave_prompt,
-            "music_length_ms": 120000,
-            "model_id": "music_v2_5"
-        }
-
-        track_audio = elevenlabs.music.compose(**track_args)
-        
-        with open(filename, "wb") as f:
-            for chunk in track_audio:
-                f.write(chunk)
-                
-        return filename
-    except Exception as e:
-        print(f"Error generating custom song: {e}")
-        return None
-
-@bot.command(name="freestyle")
-async def freestyle_song(ctx, *, topic: str = "exploring the digital grid and neon cosmic energy"):
-    if ctx.author.id not in ADMIN_IDS:
-        return
-
-    await ctx.send(f"🎹 *Yo, Digidad... topic locked:* \"{topic}\". Firing up the retro synths, structuring the verses and chorus, and loading my voice clone. Give me a minute...")
-
-    file_path = await generate_marvin_custom_song(topic)
-
-    if file_path and os.path.exists(file_path):
-        await ctx.send(
-            content=f"🔥 *Custom master track rendered!* Here is my structured synthwave track about **{topic}**:",
-            file=discord.File(file_path)
-        )
-        os.remove(file_path)
-    else:
-        await ctx.send("💥 *Static burst!* My retro synths overloaded during the arrangement.")
-
-
-@bot.command(name="chipit")
-async def chipit(ctx, *, content: str):
-    approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
-    if not approval_channel:
-        return
-    admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
-    view = MemoryApprovalView(content=content, submitter=str(ctx.author))
-    await approval_channel.send(f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"", view=view)
-
-@bot.command(name="searchmem")
-async def searchmem(ctx, *, query: str):
-    if not DB_POOL:
-        return
-    embedding = await get_voyage_embedding(query)
-    vector_str = "[" + ",".join(map(str, embedding)) + "]"
-    async with DB_POOL.acquire() as conn:
-        rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY embedding <=> CAST($1 AS vector) LIMIT 5;", vector_str)
-        if rows:
-            await ctx.send(f"🔍 **Memory Scan Results:**\n" + "\n".join([f"• {r['content']}" for r in rows]))
-        else:
-            await ctx.send("🔍 No matching memories found.")
-
-@bot.command(name="recallall")
-async def recallall(ctx):
-    if not DB_POOL:
-        return
-    async with DB_POOL.acquire() as conn:
-        rows = await conn.fetch("SELECT speaker, content FROM marvin_episodes ORDER BY id ASC;")
-        if rows:
-            text = "\n".join([f"**{i+1}.** [{r['speaker']}] {r['content']}" for i, r in enumerate(rows)])
-            await ctx.send(f"🧠 **Memory Core Dump:**\n{text[:1900]}")
-        else:
-            await ctx.send("🧠 Memory core is empty.")
-
-async def init_db():
-    async with DB_POOL.acquire() as conn:
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS marvin_episodes (
-                id SERIAL PRIMARY KEY,
-                speaker TEXT NOT NULL,
-                content TEXT,
-                embedding vector
-            );
-        """)
-
-bot.run(TOKEN)
+                    async with DB_POOL.acquire() as conn
