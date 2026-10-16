@@ -68,9 +68,11 @@ KIERAN_USER_ID = 562275970103509014
 
 USER_IDENTITY_OVERRIDES = {
     562275970103509014: "Lord Kieran (Zahamaru)",
+    # Add your user ID here if needed, e.g.:
+    # YOUR_USER_ID: "Digidad (Fire Phoenix)",
 }
 
-# Per-channel active states & short-term chat memory buffers
+# Per-channel active states & isolated chat memory buffers
 channel_active_states = {}
 chat_sessions = {}
 
@@ -170,10 +172,11 @@ async def on_message(message):
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
+    # Use channel ID for group/server chat context isolation, or author ID for DMs
     session_key = message.author.id if is_dm else channel_id
 
     try:
-        # 1. Pull relevant long-term memories via vector search
+        # 1. Pull relevant channel/long-term memories via vector search
         context_memories = ""
         if DB_POOL:
             try:
@@ -189,7 +192,7 @@ async def on_message(message):
         # 2. Resolve true user identity using overrides or fallback to display name/username
         author_identifier = USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.name)
 
-        # 3. Maintain short-term chat context buffer
+        # 3. Maintain persistent channel-isolated short-term chat buffer
         if session_key not in chat_sessions:
             chat_sessions[session_key] = ai_client.chats.create(
                 model='gemini-3.8-flash',
@@ -226,6 +229,7 @@ async def on_message(message):
 
     except Exception as e:
         print(f"Gemini error: {e}")
+        # Only clear session if a fatal API error breaks the chat buffer
         if session_key in chat_sessions:
             del chat_sessions[session_key]
 
@@ -237,14 +241,15 @@ async def start_bot(ctx):
 @bot.command(name="continue")
 async def continue_bot(ctx):
     channel_active_states[ctx.channel.id] = True
-    await ctx.send("▶️ **Conversation continuing!**")
+    await ctx.send("▶️ **Conversation continuing right where we left off!**")
 
 @bot.command(name="stop")
 async def stop_bot(ctx):
     if ctx.author.id not in ADMIN_IDS:
         return
     channel_active_states[ctx.channel.id] = False
-    await ctx.send("🛑 **Marvin halted (Emergency Stop)!**")
+    # NOTE: We intentionally keep chat_sessions[ctx.channel.id] alive so memory isn't wiped!
+    await ctx.send("🛑 **Marvin halted (Emergency Stop)!** Context preserved for resume.")
 
 
 # ---------------------------------------------------------
