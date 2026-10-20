@@ -223,19 +223,7 @@ async def on_message(message):
         
         if response and response.text:
             await message.channel.send(response.text)
-
-            if DB_POOL and len(message.content) > 15:
-                try:
-                    memory_to_store = f"{author_identifier} mentioned: {message.content}"
-                    embedding = await get_voyage_embedding(memory_to_store)
-                    vector_str = "[" + ",".join(map(str, embedding)) + "]"
-                    async with DB_POOL.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO marvin_episodes (speaker, content, embedding) VALUES ($1, $2, CAST($3 AS vector));",
-                            author_identifier, memory_to_store, vector_str
-                        )
-                except Exception as e:
-                    print(f"Auto-memory storage error: {e}")
+            # Auto-save block removed entirely here so regular messages are no longer saved as memories.
 
     except Exception as e:
         print(f"Gemini error: {e}")
