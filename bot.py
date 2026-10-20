@@ -346,12 +346,18 @@ async def freestyle_song(ctx, *, topic: str = "exploring the digital grid and ne
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
-    approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
-    if not approval_channel:
-        return
-    admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
-    view = MemoryApprovalView(content=content, submitter=str(ctx.author))
-    await approval_channel.send(f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"", view=view)
+    try:
+        approval_channel = bot.get_channel(APPROVAL_CHANNEL_ID)
+        if not approval_channel:
+            approval_channel = await bot.fetch_channel(APPROVAL_CHANNEL_ID)
+            
+        admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
+        view = MemoryApprovalView(content=content, submitter=str(ctx.author))
+        await approval_channel.send(f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"", view=view)
+        await ctx.send("✅ Memory submitted for admin review!", delete_after=5)
+    except Exception as e:
+        print(f"Error in chipit command: {e}")
+        await ctx.send(f"❌ Failed to submit memory. Check bot permissions for the approval channel.")
 
 @bot.command(name="searchmem")
 async def searchmem(ctx, *, query: str):
