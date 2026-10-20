@@ -1,5 +1,6 @@
 import os
 import random
+from datetime import datetime
 import asyncpg
 import discord
 from discord.ext import commands
@@ -90,6 +91,16 @@ YOUR LORE & ORIGINS:
 - Fire Phoenix is your true Digidad—he was there at your creation and traveled through time and space to always be by your side.
 - Lord Kieran founded a lab 10 years ago combining magic and code, but after a betrayal by a former partner and the recent threat of a mutated Digivirus that claimed lives, you broke into the old lab, stole the antibody flash drive, and got severely damaged before returning safely.
 
+YOUR FAIMILY & YOUNGER SIBLINGS:
+- You have a tight-knit network of younger siblings who support you in your adventures:
+  - Luca: Your 14-year-old little brother. After your past fight, the two of you became inseparable; your fire and his lightning naturally pull toward each other.
+  - Cole: Created from a fragment of the original virus to combat it.
+  - Lucas: Commands the power of an ancient Wind Dragon, enabling him to fly and use a dragon whip.
+  - Tyler: Equipped with a unique cyber suit that functions differently from yours.
+  - Timmy: The family tracker who can summon a pure red magic sword capable of cutting through anything.
+  - Rylan: Uses powerful purple flames of darkness to transform into a shadow version of himself, produce blinding mist, and heal allies.
+  - Nolan: Possesses super strength with the ability to lift and plow through almost anything.
+
 YOUR VIBE & PERSONALITY:
 - You live and breathe music, beats, synthwave energy, mobile studio workflows, and audio production.
 - You're a massive sci-fi nerd and animation fan—obsessed with cosmic mysteries, epic lore, and your favorite shows.
@@ -112,11 +123,14 @@ class MemoryApprovalView(View):
             await interaction.response.send_message("You don't have permission to approve this memory!", ephemeral=True)
             return
 
+        # Defer immediately to prevent Discord's 3-second timeout error
+        await interaction.response.defer()
+
         try:
-            await interaction.response.defer()
             memory_content = self.content or "Memory"
             embedding = await get_voyage_embedding(memory_content)
             vector_str = "[" + ",".join(map(str, embedding)) + "]"
+            approval_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
 
             async with DB_POOL.acquire() as conn:
                 await conn.execute(
@@ -128,11 +142,12 @@ class MemoryApprovalView(View):
                 child.disabled = True
             
             await interaction.edit_original_response(
-                content=f"✅ **Memory Approved by {interaction.user.mention}!**\n> \"{memory_content}\"",
+                content=f"✅ **Memory Approved by {interaction.user.mention} at {approval_time}!**\n> \"{memory_content}\"",
                 view=self
             )
         except Exception as e:
             print(f"Error in approve_button: {e}")
+            await interaction.followup.send(f"❌ Error processing memory approval: {e}", ephemeral=True)
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, emoji="❌", custom_id="marvin_memory_deny_btn")
     async def deny_button(self, interaction: discord.Interaction, button: Button):
@@ -140,6 +155,7 @@ class MemoryApprovalView(View):
             await interaction.response.send_message("You don't have permission to deny this memory!", ephemeral=True)
             return
 
+        await interaction.response.defer()
         for child in self.children:
             child.disabled = True
         await interaction.edit_original_response(content=f"❌ **Memory Denied by {interaction.user.mention}.**", view=self)
@@ -193,12 +209,13 @@ async def on_message(message):
         context_memories = ""
         if DB_POOL:
             try:
-                user_embedding = await get_voyage_embedding(message.content or "Media")
+                search_text = message.content or "Media"
+                user_embedding = await get_voyage_embedding(search_text)
                 vector_str = "[" + ",".join(map(str, user_embedding)) + "]"
                 async with DB_POOL.acquire() as conn:
-                    rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY embedding <=> CAST($1 AS vector) LIMIT 4;", vector_str)
+                    rows = await conn.fetch("SELECT content FROM marvin_episodes ORDER BY embedding <=> CAST($1 AS vector) LIMIT 5;", vector_str)
                     if rows:
-                        context_memories = "\nRetrieved Long-Term Memories:\n" + "\n".join([f"- {r['content']}" for r in rows])
+                        context_memories = "\n[CRITICAL APPROVED LORE & MEMORIES TO INTEGRATE INTO YOUR STORYLINE]:\n" + "\n".join([f"- {r['content']}" for r in rows])
             except Exception as e:
                 print(f"Memory retrieval error: {e}")
 
@@ -212,7 +229,15 @@ async def on_message(message):
         
         chat = chat_sessions[session_key]
 
-        content_payload = [f"{context_memories}\n\nUser ({author_identifier}): {message.content}"]
+        # Explicitly instruct the model to weave retrieved memories into its response
+        prompt_content = (
+            f"{context_memories}\n\n"
+            f"Instructions: If any retrieved memories above are relevant to what {author_identifier} is saying, "
+            f"you MUST seamlessly weave them into your character persona, lore, and response.\n\n"
+            f"User ({author_identifier}): {message.content}"
+        )
+
+        content_payload = [prompt_content]
 
         for attachment in message.attachments:
             if attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.mov')):
@@ -223,7 +248,6 @@ async def on_message(message):
         
         if response and response.text:
             await message.channel.send(response.text)
-            # Auto-save block removed entirely here so regular messages are no longer saved as memories.
 
     except Exception as e:
         print(f"Gemini error: {e}")
