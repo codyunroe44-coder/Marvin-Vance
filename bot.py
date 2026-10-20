@@ -27,7 +27,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DB_POOL = None
 
 # ---------------------------------------------------------
-# ALLOWED CHANNELS LIST
+# ALLOWED CHANNELS LIST (Includes Memory/Approval Channel)
 # ---------------------------------------------------------
 ALLOWED_CHANNELS = [
     1557881223500664852,  # 1
@@ -48,7 +48,7 @@ ALLOWED_CHANNELS = [
     1548724004238528583,  # 16
     1542151655724687410,  # 17
     1559019097646174319,  # 18
-    1559194608523812937,  # 19 (Memory log channel)
+    1559194608523812937,  # 19 (Memory log & approval channel)
     1557976491642323097,  # 20
 ]
 
@@ -174,13 +174,17 @@ async def on_message(message):
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
-    # Check 25-message limit restriction specifically for channel 1548506108279263312
+    # Check 25-message limit restriction & 5-message warning specifically for channel 1548506108279263312
     if not is_dm and channel_id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
         current_count = channel_message_counts.get(channel_id, 0)
         if current_count >= 25:
             channel_active_states[channel_id] = False
             await message.channel.send("🛑 **Restricted message limit reached (25/25)!** Use `!m_continue` to unlock another 25 messages.")
             return
+        
+        if current_count == 20:
+            await message.channel.send("⚠️ **Heads up, Digidad!** Only 5 messages left before this channel hits its 25-message limit.")
+
         channel_message_counts[channel_id] = current_count + 1
 
     session_key = message.author.id if is_dm else channel_id
