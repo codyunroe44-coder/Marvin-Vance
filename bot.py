@@ -27,7 +27,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DB_POOL = None
 
 # ---------------------------------------------------------
-# ALLOWED CHANNELS LIST (Updated with new channel ID)
+# ALLOWED CHANNELS LIST
 # ---------------------------------------------------------
 ALLOWED_CHANNELS = [
     1557881223500664852,  # 1
@@ -44,13 +44,15 @@ ALLOWED_CHANNELS = [
     1558426658539704450,  # 12
     1549253946978209872,  # 13
     1555128853150830602,  # 14
-    1548506108279263312,  # 15
+    1548506108279263312,  # 15 (Restricted Channel: 25 message limit & unique commands)
     1548724004238528583,  # 16
     1542151655724687410,  # 17
     1559019097646174319,  # 18
-    1559194608523812937,  # 19 (Also serves as memory log channel)
-    1557976491642323097,  # Added new channel ID
+    1559194608523812937,  # 19 (Memory log channel)
+    1557976491642323097,  # 20
 ]
+
+RESTRICTED_MESSAGE_LIMIT_CHANNEL = 1548506108279263312
 
 COMMAND_CHANNEL_ID = 1429408267767124088
 APPROVAL_CHANNEL_ID = 1559194608523812937
@@ -71,8 +73,9 @@ USER_IDENTITY_OVERRIDES = {
     562275970103509014: "Lord Kieran (Zahamaru)",
 }
 
-# Per-channel active states & isolated chat memory buffers
+# Per-channel active states, message tracking, & isolated chat memory buffers
 channel_active_states = {}
+channel_message_counts = {}
 chat_sessions = {}
 
 # ---------------------------------------------------------
@@ -171,6 +174,15 @@ async def on_message(message):
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
+    # Check 25-message limit restriction specifically for channel 1548506108279263312
+    if not is_dm and channel_id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
+        current_count = channel_message_counts.get(channel_id, 0)
+        if current_count >= 25:
+            channel_active_states[channel_id] = False
+            await message.channel.send("🛑 **Restricted message limit reached (25/25)!** Use `!m_continue` to unlock another 25 messages.")
+            return
+        channel_message_counts[channel_id] = current_count + 1
+
     session_key = message.author.id if is_dm else channel_id
 
     try:
@@ -226,13 +238,20 @@ async def on_message(message):
         if session_key in chat_sessions:
             del chat_sessions[session_key]
 
+# ---------------------------------------------------------
+# STANDARD COMMANDS (Blocked in Restricted Channel)
+# ---------------------------------------------------------
 @bot.command(name="start")
 async def start_bot(ctx):
+    if ctx.channel.id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
+        return
     channel_active_states[ctx.channel.id] = True
     await ctx.send("▶️ **System online!** Ready to chat.")
 
 @bot.command(name="continue")
 async def continue_bot(ctx):
+    if ctx.channel.id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
+        return
     channel_active_states[ctx.channel.id] = True
     await ctx.send("▶️ **Conversation continuing right where we left off!**")
 
@@ -240,8 +259,38 @@ async def continue_bot(ctx):
 async def stop_bot(ctx):
     if ctx.author.id not in ADMIN_IDS:
         return
+    if ctx.channel.id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
+        return
     channel_active_states[ctx.channel.id] = False
     await ctx.send("🛑 **Marvin halted (Emergency Stop)!** Context preserved for resume.")
+
+# ---------------------------------------------------------
+# UNIQUE RESTRICTED COMMANDS (!m_engage, !m_continue, !m_stop)
+# ---------------------------------------------------------
+@bot.command(name="m_engage")
+async def m_engage(ctx):
+    if ctx.channel.id != RESTRICTED_MESSAGE_LIMIT_CHANNEL:
+        return
+    channel_active_states[ctx.channel.id] = True
+    channel_message_counts[ctx.channel.id] = 0
+    await ctx.send("🔒🚀 **Restricted System online!** Initialized with a fresh 25-message budget.")
+
+@bot.command(name="m_continue")
+async def m_continue(ctx):
+    if ctx.channel.id != RESTRICTED_MESSAGE_LIMIT_CHANNEL:
+        return
+    channel_active_states[ctx.channel.id] = True
+    channel_message_counts[ctx.channel.id] = 0
+    await ctx.send("🔒▶️ **Restricted session continuing!** Another 25-message budget unlocked right where we left off.")
+
+@bot.command(name="m_stop")
+async def m_stop(ctx):
+    if ctx.author.id not in ADMIN_IDS:
+        return
+    if ctx.channel.id != RESTRICTED_MESSAGE_LIMIT_CHANNEL:
+        return
+    channel_active_states[ctx.channel.id] = False
+    await ctx.send("🔒🛑 **Restricted Marvin halted!** Context preserved for resume.")
 
 # ---------------------------------------------------------
 # STRUCTURED TOPIC-DRIVEN SYNTHWAVE PRODUCTION (!FREESTYLE)
