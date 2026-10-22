@@ -125,7 +125,6 @@ class MemoryApprovalView(View):
             await interaction.response.send_message("You don't have permission to approve this memory!", ephemeral=True)
             return
 
-        # Defer immediately to prevent Discord's 3-second timeout error
         await interaction.response.defer()
 
         try:
@@ -177,6 +176,8 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    print(f"DEBUG: Message received in channel ID: {message.channel.id} from {message.author}")
+
     if message.author == bot.user:
         return
 
@@ -192,7 +193,6 @@ async def on_message(message):
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
-    # Check 25-message limit restriction & 5-message warning specifically for channel 1548506108279263312
     if not is_dm and channel_id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
         current_count = channel_message_counts.get(channel_id, 0)
         if current_count >= 25:
@@ -231,7 +231,6 @@ async def on_message(message):
         
         chat = chat_sessions[session_key]
 
-        # Explicitly instruct the model to weave retrieved memories into its response
         prompt_content = (
             f"{context_memories}\n\n"
             f"Instructions: If any retrieved memories above are relevant to what {author_identifier} is saying, "
@@ -257,7 +256,7 @@ async def on_message(message):
             del chat_sessions[session_key]
 
 # ---------------------------------------------------------
-# STANDARD COMMANDS (Blocked in Restricted Channel)
+# STANDARD COMMANDS
 # ---------------------------------------------------------
 @bot.command(name="start")
 async def start_bot(ctx):
@@ -283,7 +282,7 @@ async def stop_bot(ctx):
     await ctx.send("🛑 **Marvin halted (Emergency Stop)!** Context preserved for resume.")
 
 # ---------------------------------------------------------
-# UNIQUE RESTRICTED COMMANDS (!m_engage, !m_continue, !m_stop)
+# UNIQUE RESTRICTED COMMANDS
 # ---------------------------------------------------------
 @bot.command(name="m_engage")
 async def m_engage(ctx):
@@ -311,7 +310,7 @@ async def m_stop(ctx):
     await ctx.send("🔒🛑 **Restricted Marvin halted!** Context preserved for resume.")
 
 # ---------------------------------------------------------
-# STRUCTURED TOPIC-DRIVEN SYNTHWAVE PRODUCTION (!FREESTYLE)
+# SYNTHWAVE PRODUCTION (!FREESTYLE)
 # ---------------------------------------------------------
 async def generate_marvin_custom_song(topic: str, filename="marvin_synthwave_song.mp3"):
     try:
