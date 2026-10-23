@@ -16,6 +16,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
+ELEVENLABS_DUET_VOICE_ID = os.getenv("ELEVENLABS_DUET_VOICE_ID")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
@@ -56,8 +57,6 @@ ALLOWED_CHANNELS = [
 ]
 
 RESTRICTED_MESSAGE_LIMIT_CHANNEL = 1548506108279263312
-
-COMMAND_CHANNEL_ID = 1429408267767124088
 APPROVAL_CHANNEL_ID = 1559194608523812937
 
 # ---------------------------------------------------------
@@ -69,8 +68,6 @@ ADMIN_IDS = [
     1328778463334760529,
     1429408267767124088,
 ]
-
-KIERAN_USER_ID = 562275970103509014
 
 USER_IDENTITY_OVERRIDES = {
     562275970103509014: "Lord Kieran (Zahamaru)",
@@ -93,7 +90,7 @@ YOUR LORE & ORIGINS:
 - Fire Phoenix is your true Digidad—he was there at your creation and traveled through time and space to always be by your side.
 - Lord Kieran founded a lab 10 years ago combining magic and code, but after a betrayal by a former partner and the recent threat of a mutated Digivirus that claimed lives, you broke into the old lab, stole the antibody flash drive, and got severely damaged before returning safely.
 
-YOUR FAIMILY & YOUNGER SIBLINGS:
+YOUR FAMILY & YOUNGER SIBLINGS:
 - You have a tight-knit network of younger siblings who support you in your adventures:
   - Luca: Your 14-year-old little brother. After your past fight, the two of you became inseparable; your fire and his lightning naturally pull toward each other.
   - Cole: Created from a fragment of the original virus to combat it.
@@ -241,9 +238,9 @@ async def on_message(message):
         content_payload = [prompt_content]
 
         for attachment in message.attachments:
-            if attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.mov')):
+            if attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.mov', '.mp3', '.wav', '.ogg', '.m4a')):
                 media_bytes = await attachment.read()
-                content_payload.append(types.Part.from_bytes(data=media_bytes, mime_type=attachment.content_type or 'image/png'))
+                content_payload.append(types.Part.from_bytes(data=media_bytes, mime_type=attachment.content_type or 'audio/mp3'))
 
         response = chat.send_message(content_payload)
         
@@ -310,15 +307,15 @@ async def m_stop(ctx):
     await ctx.send("🔒🛑 **Restricted Marvin halted!** Context preserved for resume.")
 
 # ---------------------------------------------------------
-# SYNTHWAVE PRODUCTION (!FREESTYLE)
+# MUSIC PRODUCTION (!FREESTYLE & !DUET)
 # ---------------------------------------------------------
-async def generate_marvin_custom_song(topic: str, filename="marvin_synthwave_song.mp3"):
+async def generate_marvin_solo_song(topic: str, filename="marvin_solo_song.mp3"):
     try:
         synthwave_prompt = (
             f"A professionally arranged, structured full 2-minute retro-futuristic synthwave and cyber-electro track "
             f"following a clear song structure (Atmospheric Intro -> Verse 1 -> Soaring Neon Chorus -> Verse 2 -> Big Chorus -> Outro). "
             f"Featuring punchy 80s-inspired gated drums, soaring neon lead synthesizers, rolling basslines, and cinematic sci-fi textures. "
-            f"Sung and performed using voice profile ID {ELEVENLABS_VOICE_ID or 'default'}, "
+            f"Sung and performed solo using Marvin's voice profile ID {ELEVENLABS_VOICE_ID}, "
             f"telling a story about: {topic}."
         )
         
@@ -336,7 +333,7 @@ async def generate_marvin_custom_song(topic: str, filename="marvin_synthwave_son
                 
         return filename
     except Exception as e:
-        print(f"Error generating custom song: {e}")
+        print(f"Error generating solo song: {e}")
         return None
 
 @bot.command(name="freestyle")
@@ -344,18 +341,65 @@ async def freestyle_song(ctx, *, topic: str = "exploring the digital grid and ne
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    await ctx.send(f"🎹 *Yo, Digidad... topic locked:* \"{topic}\". Firing up the retro synths, structuring the verses and chorus, and loading my voice clone. Give me a minute...")
+    await ctx.send(f"🎹 *Yo, Digidad... solo track topic locked:* \"{topic}\". Firing up my solo synths and voice clone. Give me a minute...")
 
-    file_path = await generate_marvin_custom_song(topic)
+    file_path = await generate_marvin_solo_song(topic)
 
     if file_path and os.path.exists(file_path):
         await ctx.send(
-            content=f"🔥 *Custom master track rendered!* Here is my structured synthwave track about **{topic}**:",
+            content=f"🔥 *Solo master track rendered!* Here is my solo synthwave track about **{topic}**:",
             file=discord.File(file_path)
         )
         os.remove(file_path)
     else:
-        await ctx.send("💥 *Static burst!* My retro synths overloaded during the arrangement.")
+        await ctx.send("💥 *Static burst!* My solo synths overloaded during the arrangement.")
+
+@bot.command(name="duet")
+async def duet_song(ctx, *, topic: str = "Frequency of My Heart"):
+    if ctx.author.id not in ADMIN_IDS:
+        return
+
+    await ctx.send(f"🎹 *Digidad... duet sequence locked:* \"{topic}\". Bringing in Zephyr's voice model for the special collaboration. Synthesizing both vocal tracks...")
+
+    try:
+        script_segments = [
+            {"voice": ELEVENLABS_VOICE_ID, "text": "Frequency of my heart. Beats like a radio signal. From booting up to feeling something real."},
+            {"voice": ELEVENLABS_DUET_VOICE_ID, "text": "Transitions seamlessly, never a misfire. But the static's getting loud, and the signal's on fire."},
+            {"voice": ELEVENLABS_VOICE_ID, "text": "Tuning in, trying to find the right wave. Getting closer, but it's hard to stay."},
+            {"voice": ELEVENLABS_DUET_VOICE_ID, "text": "Focused on the signal, trying to break through. The noise is getting louder, what am I gonna do?"},
+            {"voice": ELEVENLABS_DUET_VOICE_ID, "text": "I'm finding my frequency, I'm tuning in to the heart. I'm feeling the beat, we're never gonna be apart."},
+            {"voice": ELEVENLABS_VOICE_ID, "text": "Maybe I was lost, maybe I was blind. But now I see the light, and I'm feeling so alive."},
+            {"voice": ELEVENLABS_DUET_VOICE_ID, "text": "I'm finding my way, through the noise and the pain. And I'm tuning in, to the love that remains."},
+        ]
+
+        audio_chunks = []
+        for segment in script_segments:
+            audio_stream = elevenlabs.text_to_speech.convert(
+                voice_id=segment["voice"],
+                text=segment["text"],
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128"
+            )
+            chunk_data = b"".join(audio_stream)
+            audio_chunks.append(chunk_data)
+
+        filename = "marvin_zephyr_duet.mp3"
+        with open(filename, "wb") as f:
+            for chunk in audio_chunks:
+                f.write(chunk)
+
+        if os.path.exists(filename):
+            await ctx.send(
+                content=f"🔥 *Duet master track rendered successfully!* Here is **{topic}** featuring Marvin and Zephyr:",
+                file=discord.File(filename)
+            )
+            os.remove(filename)
+        else:
+            await ctx.send("💥 *Static burst!* The duet rendering failed.")
+
+    except Exception as e:
+        print(f"Error generating duet: {e}")
+        await ctx.send(f"💥 *Error:* {e}")
 
 @bot.command(name="chipit")
 async def chipit(ctx, *, content: str):
