@@ -232,7 +232,7 @@ async def on_message(message):
 
         if session_key not in chat_sessions:
             chat_sessions[session_key] = ai_client.chats.create(
-                model='gemini-3.8-flash',
+                model='gemini-3.6-flash',
                 config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
             )
         
@@ -255,7 +255,11 @@ async def on_message(message):
         response = chat.send_message(content_payload)
         
         if response and response.text:
-            await message.channel.send(response.text)
+            reply_text = response.text
+            # Split into chunks of 1900 chars to safely prevent Discord's 2000 limit error
+            chunks = [reply_text[i:i + 1900] for i in range(0, len(reply_text), 1900)]
+            for chunk in chunks:
+                await message.channel.send(chunk)
 
     except Exception as e:
         print(f"Gemini error: {e}")
