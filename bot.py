@@ -46,7 +46,7 @@ ALLOWED_CHANNELS = [
     1558426658539704450,  # 12
     1549253946978209872,  # 13
     1555128853150830602,  # 14
-    1548506108279263312,  # 15 (Restricted Channel: 25 message limit & unique commands)
+    1548506108279263312,  # 15 (Restricted Channel: 10 message limit & unique commands)
     1548724004238528583,  # 16
     1542151655724687410,  # 17
     1559019097646174319,  # 18
@@ -192,6 +192,10 @@ async def on_message(message):
     if not is_dm and message.channel.id not in ALLOWED_CHANNELS:
         return
 
+    # Check if Marvin is directly pinged to wake up the channel
+    if bot.user in message.mentions:
+        channel_active_states[message.channel.id] = True
+
     await bot.process_commands(message)
     if message.content.startswith("!"):
         return
@@ -202,13 +206,13 @@ async def on_message(message):
 
     if not is_dm and channel_id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
         current_count = channel_message_counts.get(channel_id, 0)
-        if current_count >= 25:
+        if current_count >= 10:
             channel_active_states[channel_id] = False
-            await message.channel.send("🛑 **Restricted message limit reached (25/25)!** Use `!m_continue` to unlock another 25 messages.")
+            await message.channel.send("🛑 **Restricted message limit reached (10/10)!** Use `!m_continue` to unlock another 10 messages.")
             return
         
-        if current_count == 20:
-            await message.channel.send("⚠️ **Heads up, Digidad!** Only 5 messages left before this channel hits its 25-message limit.")
+        if current_count == 7:
+            await message.channel.send("⚠️ **Heads up, Digidad!** Only 3 messages left before this channel hits its 10-message limit.")
 
         channel_message_counts[channel_id] = current_count + 1
 
@@ -269,13 +273,6 @@ async def on_message(message):
 # ---------------------------------------------------------
 # STANDARD COMMANDS
 # ---------------------------------------------------------
-@bot.command(name="start")
-async def start_bot(ctx):
-    if ctx.channel.id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
-        return
-    channel_active_states[ctx.channel.id] = True
-    await ctx.send("▶️ **System online!** Ready to chat.")
-
 @bot.command(name="continue")
 async def continue_bot(ctx):
     if ctx.channel.id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
@@ -293,7 +290,7 @@ async def stop_bot(ctx):
     await ctx.send("🛑 **Marvin halted (Emergency Stop)!** Context preserved for resume.")
 
 # ---------------------------------------------------------
-# UNIQUE RESTRICTED COMMANDS
+# UNIQUE RESTRICTED COMMANDS (Updated for 10-message limit)
 # ---------------------------------------------------------
 @bot.command(name="m_engage")
 async def m_engage(ctx):
@@ -301,7 +298,7 @@ async def m_engage(ctx):
         return
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
-    await ctx.send("🔒🚀 **Restricted System online!** Initialized with a fresh 25-message budget.")
+    await ctx.send("🔒🚀 **Restricted System online!** Initialized with a fresh 10-message budget.")
 
 @bot.command(name="m_continue")
 async def m_continue(ctx):
@@ -309,7 +306,7 @@ async def m_continue(ctx):
         return
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
-    await ctx.send("🔒▶️ **Restricted session continuing!** Another 25-message budget unlocked right where we left off.")
+    await ctx.send("🔒▶️ **Restricted session continuing!** Another 10-message budget unlocked right where we left off.")
 
 @bot.command(name="m_stop")
 async def m_stop(ctx):
