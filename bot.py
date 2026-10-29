@@ -192,7 +192,7 @@ async def on_message(message):
     if not is_dm and message.channel.id not in ALLOWED_CHANNELS:
         return
 
-    # Check if Marvin is directly pinged to wake up the channel
+    # Check if Marvin is directly pinged to wake up the channel automatically
     if bot.user in message.mentions:
         channel_active_states[message.channel.id] = True
 
@@ -256,14 +256,16 @@ async def on_message(message):
                 media_bytes = await attachment.read()
                 content_payload.append(types.Part.from_bytes(data=media_bytes, mime_type=attachment.content_type or 'audio/mp3'))
 
-        response = chat.send_message(content_payload)
-        
-        if response and response.text:
-            reply_text = response.text
-            # Split into chunks of 1900 chars to safely prevent Discord's 2000 limit error
-            chunks = [reply_text[i:i + 1900] for i in range(0, len(reply_text), 1900)]
-            for chunk in chunks:
-                await message.channel.send(chunk)
+        # Wrapped in typing() so Marvin shows as typing in Discord while Gemini generates the response
+        async with message.channel.typing():
+            response = chat.send_message(content_payload)
+            
+            if response and response.text:
+                reply_text = response.text
+                # Split into chunks of 1900 chars to safely prevent Discord's 2000 limit error
+                chunks = [reply_text[i:i + 1900] for i in range(0, len(reply_text), 1900)]
+                for chunk in chunks:
+                    await message.channel.send(chunk)
 
     except Exception as e:
         print(f"Gemini error: {e}")
@@ -271,7 +273,7 @@ async def on_message(message):
             del chat_sessions[session_key]
 
 # ---------------------------------------------------------
-# STANDARD COMMANDS
+# STANDARD COMMANDS (Start command removed)
 # ---------------------------------------------------------
 @bot.command(name="continue")
 async def continue_bot(ctx):
