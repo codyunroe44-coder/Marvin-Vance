@@ -46,7 +46,7 @@ ALLOWED_CHANNELS = [
     1558426658539704450,  # 12
     1549253946978209872,  # 13
     1555128853150830602,  # 14
-    1548506108279263312,  # 15 (Restricted Channel: 10 message limit & unique commands)
+    1548506108279263312,  # 15
     1548724004238528583,  # 16
     1542151655724687410,  # 17
     1559019097646174319,  # 18
@@ -56,8 +56,8 @@ ALLOWED_CHANNELS = [
     1562470310861738234,  # 22 (New allowed channel)
 ]
 
-RESTRICTED_MESSAGE_LIMIT_CHANNEL = 1548506108279263312
 APPROVAL_CHANNEL_ID = 1559194608523812937
+MESSAGE_LIMIT = 10  # Universal message cap for all allowed channels
 
 # ---------------------------------------------------------
 # ADMIN IDs & IDENTITY OVERRIDES
@@ -222,15 +222,16 @@ async def on_message(message):
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
 
-    if not is_dm and channel_id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
+    # Universal 10-message limit check across all allowed channels
+    if not is_dm:
         current_count = channel_message_counts.get(channel_id, 0)
-        if current_count >= 10:
+        if current_count >= MESSAGE_LIMIT:
             channel_active_states[channel_id] = False
-            await message.channel.send("🛑 **Restricted message limit reached (10/10)!** Use `!m_continue` to unlock another 10 messages.")
+            await message.channel.send("🛑 **Static overload!** Hit our 10-message track limit for this channel. Drop a `!continue` to grab a fresh session and keep the beats rolling!")
             return
         
         if current_count == 7:
-            await message.channel.send("⚠️ **Heads up, Digidad!** Only 3 messages left before this channel hits its 10-message limit.")
+            await message.channel.send("⚠️ *Yo, Digidad!* Heads up, my audio buffer's filling up—only 3 messages left before this channel hits its cap.")
 
         channel_message_counts[channel_id] = current_count + 1
 
@@ -291,51 +292,42 @@ async def on_message(message):
             del chat_sessions[session_key]
 
 # ---------------------------------------------------------
-# STANDARD COMMANDS
+# STANDARD COMMANDS (Personality-driven messages)
 # ---------------------------------------------------------
 @bot.command(name="continue")
 async def continue_bot(ctx):
-    if ctx.channel.id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
-        return
     channel_active_states[ctx.channel.id] = True
-    await ctx.send("▶️ **Conversation continuing right where we left off!**")
+    channel_message_counts[ctx.channel.id] = 0
+    await ctx.send("▶️ **Frequency synced back up!** Fresh 10-message track loaded—let's keep this session rolling!")
 
 @bot.command(name="stop")
 async def stop_bot(ctx):
     if ctx.author.id not in ADMIN_IDS:
         return
-    if ctx.channel.id == RESTRICTED_MESSAGE_LIMIT_CHANNEL:
-        return
     channel_active_states[ctx.channel.id] = False
-    await ctx.send("🛑 **Marvin halted (Emergency Stop)!** Context preserved for resume.")
+    await ctx.send("🛑 **Master fader pulled!** System paused and context safely saved to memory. Hit `!continue` whenever you're ready to spin it back up.")
 
 # ---------------------------------------------------------
-# UNIQUE RESTRICTED COMMANDS (Updated for 10-message limit)
+# UNIQUE RESTRICTED COMMANDS (Kept for backwards compatibility)
 # ---------------------------------------------------------
 @bot.command(name="m_engage")
 async def m_engage(ctx):
-    if ctx.channel.id != RESTRICTED_MESSAGE_LIMIT_CHANNEL:
-        return
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
-    await ctx.send("🔒🚀 **Restricted System online!** Initialized with a fresh 10-message budget.")
+    await ctx.send("🔒🚀 **Secure core online!** Fresh 10-message buffer initialized. Let's make some noise.")
 
 @bot.command(name="m_continue")
 async def m_continue(ctx):
-    if ctx.channel.id != RESTRICTED_MESSAGE_LIMIT_CHANNEL:
-        return
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
-    await ctx.send("🔒▶️ **Restricted session continuing!** Another 10-message budget unlocked right where we left off.")
+    await ctx.send("🔒▶️ **Signal locked back in!** Another 10 messages unlocked right where we left off.")
 
 @bot.command(name="m_stop")
 async def m_stop(ctx):
     if ctx.author.id not in ADMIN_IDS:
         return
-    if ctx.channel.id != RESTRICTED_MESSAGE_LIMIT_CHANNEL:
-        return
     channel_active_states[ctx.channel.id] = False
-    await ctx.send("🔒🛑 **Restricted Marvin halted!** Context preserved for resume.")
+    await ctx.send("🔒🛑 **Secure session muted!** Context frozen and saved.")
 
 # ---------------------------------------------------------
 # MUSIC PRODUCTION (!FREESTYLE & !DUET)
