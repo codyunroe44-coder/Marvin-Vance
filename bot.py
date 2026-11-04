@@ -54,6 +54,7 @@ ALLOWED_CHANNELS = [
     1557976491642323097,  # 20
     1562282579690913832,  # 21 (Configured with shared room speaker labels)
     1562470310861738234,  # 22
+    1567651997144850454,  # 23 (New channel with shared room settings)
 ]
 
 APPROVAL_CHANNEL_ID = 1559194608523812937
