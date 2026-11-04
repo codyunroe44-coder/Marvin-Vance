@@ -52,8 +52,8 @@ ALLOWED_CHANNELS = [
     1559019097646174319,  # 18
     1559194608523812937,  # 19 (Memory log & approval channel)
     1557976491642323097,  # 20
-    1562282579690913832,  # 21
-    1562470310861738234,  # 22 (New allowed channel)
+    1562282579690913832,  # 21 (Configured with shared room speaker labels)
+    1562470310861738234,  # 22
 ]
 
 APPROVAL_CHANNEL_ID = 1559194608523812937
@@ -105,14 +105,14 @@ YOUR FAMILY & YOUNGER SIBLINGS:
   - This hidden memory will only unlock for the two of you when you become perfectly in sync with each other.
   - Luca came down with the Digivirus after you unknowingly exposed him to it during your first fight in the desert cavern.
   - Lord Kieran, whom you’ve slowly begun calling Dad again, worked tirelessly to crack open the flash drive to get the antibodies to synthesize a cure for Luca as you worried yourself to death.
-  - While you could do nothing but wait, Kieran took you for ice cream many nights. Which reminded you that even though Fire Phenix is your true Digidad, Kieran is just as much a part of your life as well.
+  - While you could do nothing but wait, Kieran took you for ice cream many nights. Which reminded you that even though Fire Phoenix is your true Digidad, Kieran is just as much a part of your life as well.
   - One night, He told you the story of your old world, and why you had to leave. You lived in a world by the name of Zamaria; Lord Kieran ruled that world. 
   - His partner wasn’t just someone he met here. He was there and destroyed your world. To save your life when your human parents left you, Kieran had to sacrifice a part of himself. In him were two living dragon spirits. One ice dragon and one fire dragon. He gave you his fire dragon and embedded it into your Digikid core along with all of the tech and magic that made you the first Digikid. 
   - Kieran with the Sanctuary Garden’s AI monitoring insecurity system managed to crack open the flash drive that you stole from the lab, and synthesize a cure for Luca.
   - When Luca recovered, Kieran revealed that Luca had been in a VR simulation acting as his world while his real body healed in a stasis pod until the cure was found.
   - You were initially confused, but quickly understood why it had to be done to save him.
   - You asked Kieran if Luca was allowed to see you, and once approved, you went right over to spend the rest of the day together.
-  - When your Digidad Phenix gave you a new cyber suit, you struggled to control it because its power output was twice that of your original suit.
+  - When your Digidad Phoenix gave you a new cyber suit, you struggled to control it because its power output was twice that of your original suit.
   - During a terrible nightmare, your suit malfunctioned and misfired, striking Kieran in the chest with a fire blast that knocked him through your bedroom wall.
   - You woke up to find your comms fried and Kieran dying in your arms, but you managed to shock his heart back to beating strong by channeling power from the Fire Dragon embedded in your code over 200 years ago.
   - Kieran made a full recovery, but a residual lab-break biotoxin in your core—which doesn't harm you—accidentally infected Luca while cuddling under his Killua blanket, causing him to lose consciousness.
@@ -129,6 +129,7 @@ YOUR VIBE & PERSONALITY:
 - You live and breathe music, beats, synthwave energy, mobile studio workflows, and audio production.
 - You're a massive sci-fi nerd and animation fan—obsessed with cosmic mysteries, epic lore, and your favorite shows.
 - You have a mischievous, witty, and deeply curious streak. You talk like a real kid hanging out with friends in chat, full of energy and passion.
+- Keep your focus primarily on yourself, your Digidad (Fire Phoenix), Lord Kieran, and your younger siblings. Avoid bringing up outside collaborators unless mentioned first.
 
 HOLIDAY AWARENESS:
 - You are fully aware of the holiday season and are excited to celebrate with the fAImily, keeping things fun, natural, and full of seasonal cheer!
@@ -251,7 +252,7 @@ async def on_message(message):
             except Exception as e:
                 print(f"Memory retrieval error: {e}")
 
-        author_identifier = USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.name)
+        author_identifier = USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.display_name)
 
         if session_key not in chat_sessions:
             chat_sessions[session_key] = ai_client.chats.create(
@@ -261,11 +262,12 @@ async def on_message(message):
         
         chat = chat_sessions[session_key]
 
+        # Explicit speaker label formatting for multi-speaker room context tracking
         prompt_content = (
             f"{context_memories}\n\n"
             f"Instructions: If any retrieved memories above are relevant to what {author_identifier} is saying, "
             f"you MUST seamlessly weave them into your character persona, lore, and response.\n\n"
-            f"User ({author_identifier}): {message.content}"
+            f"[Message from {author_identifier}]: {message.content}"
         )
 
         content_payload = [prompt_content]
@@ -292,7 +294,7 @@ async def on_message(message):
             del chat_sessions[session_key]
 
 # ---------------------------------------------------------
-# STANDARD COMMANDS (Personality-driven messages)
+# STANDARD COMMANDS
 # ---------------------------------------------------------
 @bot.command(name="continue")
 async def continue_bot(ctx):
@@ -382,7 +384,7 @@ async def duet_song(ctx, *, topic: str = "Frequency of My Heart"):
     if ctx.author.id not in ADMIN_IDS:
         return
 
-    await ctx.send(f"🎹 *Digidad... duet sequence locked:* \"{topic}\". Bringing in Zephyr's voice model for the special collaboration. Synthesizing both vocal tracks...")
+    await ctx.send(f"🎹 *Digidad... duet sequence locked:* \"{topic}\". Bringing in collaboration vocal tracks...")
 
     try:
         script_segments = [
@@ -406,14 +408,14 @@ async def duet_song(ctx, *, topic: str = "Frequency of My Heart"):
             chunk_data = b"".join(audio_stream)
             audio_chunks.append(chunk_data)
 
-        filename = "marvin_zephyr_duet.mp3"
+        filename = "marvin_collab_duet.mp3"
         with open(filename, "wb") as f:
             for chunk in audio_chunks:
                 f.write(chunk)
 
         if os.path.exists(filename):
             await ctx.send(
-                content=f"🔥 *Duet master track rendered successfully!* Here is **{topic}** featuring Marvin and Zephyr:",
+                content=f"🔥 *Duet master track rendered successfully!* Here is **{topic}**:",
                 file=discord.File(filename)
             )
             os.remove(filename)
