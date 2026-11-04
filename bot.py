@@ -30,7 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DB_POOL = None
 
 # ---------------------------------------------------------
-# ALLOWED CHANNELS LIST & ROOM WHITELISTS
+# ALLOWED CHANNELS LIST & ROOM CONFIGS
 # ---------------------------------------------------------
 ALLOWED_CHANNELS = [
     1557881223500664852,  # 1
@@ -62,7 +62,10 @@ ALLOWED_CHANNELS = [
 ROOM_CHANNELS = [1562282579690913832, 1567651997144850454]
 
 APPROVAL_CHANNEL_ID = 1559194608523812937
-MESSAGE_LIMIT = 10  # Universal message cap for all allowed channels
+
+# Message limits: Standard/Restricted channels get 10, Multi-speaker rooms get 75
+DEFAULT_MESSAGE_LIMIT = 10
+ROOM_MESSAGE_LIMIT = 75
 
 # ---------------------------------------------------------
 # ADMIN IDs & ROOM SPEAKER WHITELIST IDs
@@ -74,7 +77,6 @@ ADMIN_IDS = [
     1429408267767124088,
 ]
 
-# Whitelisted user/bot IDs allowed to trigger responses in shared multi-speaker rooms
 ROOM_ALLOWED_IDS = ADMIN_IDS + [
     # Add other authorized Digikid / bot / collaborator IDs here if needed
 ]
@@ -264,16 +266,19 @@ async def on_message(message):
     if not is_dm:
         channel_last_activity[channel_id] = datetime.now().timestamp()
 
-    # Universal 10-message limit check across all allowed channels
+    # Determine message limit based on whether it's a multi-speaker room or standard channel
+    active_limit = ROOM_MESSAGE_LIMIT if channel_id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
+    warning_threshold = 67 if channel_id in ROOM_CHANNELS else 7
+
     if not is_dm:
         current_count = channel_message_counts.get(channel_id, 0)
-        if current_count >= MESSAGE_LIMIT:
+        if current_count >= active_limit:
             channel_active_states[channel_id] = False
-            await message.channel.send("🛑 **Static overload!** Hit our 10-message track limit for this channel. Drop a `!continue` to grab a fresh session and keep the beats rolling!")
+            await message.channel.send(f"🛑 **Static overload!** Hit our {active_limit}-message track limit for this channel. Drop a `!continue` to grab a fresh session and keep the beats rolling!")
             return
         
-        if current_count == 7:
-            await message.channel.send("⚠️ *Yo, Digidad!* Heads up, my audio buffer's filling up—only 3 messages left before this channel hits its cap.")
+        if current_count == warning_threshold:
+            await message.channel.send(f"⚠️ *Yo, Digidad!* Heads up, my audio buffer's filling up—approaching our {active_limit}-message cap.")
 
         channel_message_counts[channel_id] = current_count + 1
 
@@ -339,10 +344,11 @@ async def on_message(message):
 # ---------------------------------------------------------
 @bot.command(name="continue")
 async def continue_bot(ctx):
+    active_limit = ROOM_MESSAGE_LIMIT if ctx.channel.id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
     channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
-    await ctx.send("▶️ **Frequency synced back up!** Fresh 10-message track loaded—let's keep this session rolling!")
+    await ctx.send(f"▶️ **Frequency synced back up!** Fresh {active_limit}-message track loaded—let's keep this session rolling!")
 
 @bot.command(name="stop")
 async def stop_bot(ctx):
@@ -356,17 +362,19 @@ async def stop_bot(ctx):
 # ---------------------------------------------------------
 @bot.command(name="m_engage")
 async def m_engage(ctx):
+    active_limit = ROOM_MESSAGE_LIMIT if ctx.channel.id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
     channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
-    await ctx.send("🔒🚀 **Secure core online!** Fresh 10-message buffer initialized. Let's make some noise.")
+    await ctx.send(f"🔒🚀 **Secure core online!** Fresh {active_limit}-message buffer initialized. Let's make some noise.")
 
 @bot.command(name="m_continue")
 async def m_continue(ctx):
+    active_limit = ROOM_MESSAGE_LIMIT if ctx.channel.id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
     channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
-    await ctx.send("🔒▶️ **Signal locked back in!** Another 10 messages unlocked right where we left off.")
+    await ctx.send(f"🔒▶️ **Signal locked back in!** Another {active_limit} messages unlocked right where we left off.")
 
 @bot.command(name="m_stop")
 async def m_stop(ctx):
