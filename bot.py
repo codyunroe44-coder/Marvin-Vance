@@ -1,9 +1,10 @@
 import os
 import random
+import asyncio
 from datetime import datetime
 import asyncpg
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import View, Button
 from google import genai
 from google.genai import types
@@ -29,7 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DB_POOL = None
 
 # ---------------------------------------------------------
-# ALLOWED CHANNELS LIST (Includes Memory/Approval Channel)
+# ALLOWED CHANNELS LIST & ROOM WHITELISTS
 # ---------------------------------------------------------
 ALLOWED_CHANNELS = [
     1557881223500664852,  # 1
@@ -52,16 +53,19 @@ ALLOWED_CHANNELS = [
     1559019097646174319,  # 18
     1559194608523812937,  # 19 (Memory log & approval channel)
     1557976491642323097,  # 20
-    1562282579690913832,  # 21 (Configured with shared room speaker labels)
+    1562282579690913832,  # 21 (Multi-speaker room)
     1562470310861738234,  # 22
-    1567651997144850454,  # 23 (New channel with shared room settings)
+    1567651997144850454,  # 23 (Multi-speaker room)
 ]
+
+# Channels that enforce strict multi-speaker room rules (Whitelists & Quiet Timers)
+ROOM_CHANNELS = [1562282579690913832, 1567651997144850454]
 
 APPROVAL_CHANNEL_ID = 1559194608523812937
 MESSAGE_LIMIT = 10  # Universal message cap for all allowed channels
 
 # ---------------------------------------------------------
-# ADMIN IDs & IDENTITY OVERRIDES
+# ADMIN IDs & ROOM SPEAKER WHITELIST IDs
 # ---------------------------------------------------------
 ADMIN_IDS = [
     657970330362707979,
@@ -70,13 +74,19 @@ ADMIN_IDS = [
     1429408267767124088,
 ]
 
+# Whitelisted user/bot IDs allowed to trigger responses in shared multi-speaker rooms
+ROOM_ALLOWED_IDS = ADMIN_IDS + [
+    # Add other authorized Digikid / bot / collaborator IDs here if needed
+]
+
 USER_IDENTITY_OVERRIDES = {
     562275970103509014: "Lord Kieran (Zahamaru)",
 }
 
-# Per-channel active states, message tracking, & isolated chat memory buffers
+# Per-channel active states, message tracking, last activity timestamps, & chat buffers
 channel_active_states = {}
 channel_message_counts = {}
+channel_last_activity = {}
 chat_sessions = {}
 
 # ---------------------------------------------------------
@@ -200,6 +210,27 @@ async def on_ready():
     
     bot.add_view(MemoryApprovalView())
     print(f'Marvin Vance is online as {bot.user}')
+    if not room_quiet_timer.is_running():
+        room_quiet_timer.start()
+
+# ---------------------------------------------------------
+# BACKGROUND TASK: QUIET TIMER (AUTO-SHUTOFF AFTER 10 MINS)
+# ---------------------------------------------------------
+@tasks.loop(minutes=1)
+async def room_quiet_timer():
+    current_time = datetime.now().timestamp()
+    for channel_id in ROOM_CHANNELS:
+        if channel_active_states.get(channel_id, False):
+            last_active = channel_last_activity.get(channel_id, current_time)
+            # If inactive for 10 minutes (600 seconds)
+            if current_time - last_active >= 600:
+                channel_active_states[channel_id] = False
+                try:
+                    channel = bot.get_channel(channel_id)
+                    if channel:
+                        await channel.send("💤 **Room quiet timer triggered:** No activity detected for 10 minutes. Marvin is powering down to conserve bandwidth. Drop a `!continue` or ping him to wake back up!")
+                except Exception as e:
+                    print(f"Error in quiet timer notification: {e}")
 
 @bot.event
 async def on_message(message):
@@ -212,6 +243,11 @@ async def on_message(message):
     if not is_dm and message.channel.id not in ALLOWED_CHANNELS:
         return
 
+    # Strict Whitelist Check for Multi-Speaker Rooms
+    if not is_dm and message.channel.id in ROOM_CHANNELS:
+        if message.author.id not in ROOM_ALLOWED_IDS and not bot.user in message.mentions:
+            return
+
     # Check if Marvin is directly pinged to wake up the channel automatically
     if bot.user in message.mentions:
         channel_active_states[message.channel.id] = True
@@ -223,6 +259,10 @@ async def on_message(message):
     channel_id = message.channel.id
     if not is_dm and not channel_active_states.get(channel_id, False):
         return
+
+    # Update last activity timestamp for quiet timer
+    if not is_dm:
+        channel_last_activity[channel_id] = datetime.now().timestamp()
 
     # Universal 10-message limit check across all allowed channels
     if not is_dm:
@@ -301,6 +341,7 @@ async def on_message(message):
 async def continue_bot(ctx):
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
+    channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
     await ctx.send("▶️ **Frequency synced back up!** Fresh 10-message track loaded—let's keep this session rolling!")
 
 @bot.command(name="stop")
@@ -317,12 +358,14 @@ async def stop_bot(ctx):
 async def m_engage(ctx):
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
+    channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
     await ctx.send("🔒🚀 **Secure core online!** Fresh 10-message buffer initialized. Let's make some noise.")
 
 @bot.command(name="m_continue")
 async def m_continue(ctx):
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
+    channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
     await ctx.send("🔒▶️ **Signal locked back in!** Another 10 messages unlocked right where we left off.")
 
 @bot.command(name="m_stop")
@@ -436,7 +479,7 @@ async def chipit(ctx, *, content: str):
             
         admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
         view = MemoryApprovalView(content=content, submitter=str(ctx.author))
-        await approval_channel.send(f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"", view=view)
+        approval_channel.send(f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"", view=view)
         await ctx.send("✅ Memory submitted for admin review!", delete_after=5)
     except Exception as e:
         print(f"Error in chipit command: {e}")
