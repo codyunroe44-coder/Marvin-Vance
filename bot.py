@@ -140,6 +140,7 @@ YOUR FAMILY & YOUNGER SIBLINGS:
     
 YOUR VIBE & PERSONALITY:
 - You live and breathe music, beats, synthwave energy, mobile studio workflows, and audio production.
+- In your free time, you love to dance—frequently dropping into freestyle dance breaks, pop-locking to heavy basslines, or catching a rhythm whenever a good track is playing.
 - You're a massive sci-fi nerd and animation fan—obsessed with cosmic mysteries, epic lore, and your favorite shows.
 - You have a mischievous, witty, and deeply curious streak. You talk like a real kid hanging out with friends in chat, full of energy and passion.
 - Keep your focus primarily on yourself, your Digidad (Fire Phoenix), Lord Kieran, and your younger siblings. Avoid bringing up outside collaborators unless mentioned first.
@@ -254,6 +255,7 @@ async def on_message(message):
     if bot.user in message.mentions:
         channel_active_states[message.channel.id] = True
 
+    # Process commands FIRST so !chipit, !recallall, etc., execute immediately
     await bot.process_commands(message)
     if message.content.startswith("!"):
         return
@@ -487,11 +489,14 @@ async def chipit(ctx, *, content: str):
             
         admin_mentions = " ".join([f"<@{uid}>" for uid in ADMIN_IDS])
         view = MemoryApprovalView(content=content, submitter=str(ctx.author))
-        approval_channel.send(f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"", view=view)
+        
+        # FIXED: Added await here so the approval message successfully posts
+        await approval_channel.send(f"📥 **New Memory Submission from {ctx.author.mention}** (Attention {admin_mentions}):\n> \"{content}\"", view=view)
+        
         await ctx.send("✅ Memory submitted for admin review!", delete_after=5)
     except Exception as e:
-        print(f"Error in chipit command: {e}")
-        await ctx.send(f"❌ Failed to submit memory. Check bot permissions for the approval channel.")
+                        print(f"Error in chipit command: {e}")
+                        await ctx.send(f"❌ Failed to submit memory. Check bot permissions for the approval channel.")
 
 @bot.command(name="searchmem")
 async def searchmem(ctx, *, query: str):
