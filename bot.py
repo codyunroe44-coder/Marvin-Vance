@@ -593,6 +593,8 @@ CHARACTER_REFERENCES = {
     "kid omen": ("Kid Omen", "kid_omen.jpg"),
     "general near": ("General Near", "general_near.jpg"),
     "echo": ("Echo", "echo.jpg"),
+    "gabriel": ("Gabriel", "gabriel.jpg"),
+    "gabe": ("Gabriel", "gabriel.jpg"),
 }
 
 async def fetch_reference_image(filename):
