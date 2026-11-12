@@ -67,6 +67,21 @@ APPROVAL_CHANNEL_ID = 1559194608523812937
 DEFAULT_MESSAGE_LIMIT = 10
 ROOM_MESSAGE_LIMIT = 75
 
+# Per-channel message limit overrides (checked before the room/default limits)
+CHANNEL_MESSAGE_LIMITS = {
+    1558129920528613437: 30,  # Channel 9
+}
+
+def get_message_limit(channel_id):
+    if channel_id in CHANNEL_MESSAGE_LIMITS:
+        return CHANNEL_MESSAGE_LIMITS[channel_id]
+    return ROOM_MESSAGE_LIMIT if channel_id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
+
+def get_warning_threshold(channel_id):
+    if channel_id in CHANNEL_MESSAGE_LIMITS:
+        return CHANNEL_MESSAGE_LIMITS[channel_id] - 3
+    return 67 if channel_id in ROOM_CHANNELS else 7
+
 # ---------------------------------------------------------
 # ADMIN IDs & ROOM SPEAKER WHITELIST IDs
 # ---------------------------------------------------------
@@ -293,8 +308,8 @@ async def on_message(message):
         channel_last_activity[channel_id] = datetime.now().timestamp()
 
     # Determine message limit based on whether it's a multi-speaker room or standard channel
-    active_limit = ROOM_MESSAGE_LIMIT if channel_id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
-    warning_threshold = 67 if channel_id in ROOM_CHANNELS else 7
+    active_limit = get_message_limit(channel_id)
+    warning_threshold = get_warning_threshold(channel_id)
 
     if not is_dm:
         current_count = channel_message_counts.get(channel_id, 0)
@@ -370,7 +385,7 @@ async def on_message(message):
 # ---------------------------------------------------------
 @bot.command(name="continue")
 async def continue_bot(ctx):
-    active_limit = ROOM_MESSAGE_LIMIT if ctx.channel.id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
+    active_limit = get_message_limit(ctx.channel.id)
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
     channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
@@ -388,7 +403,7 @@ async def stop_bot(ctx):
 # ---------------------------------------------------------
 @bot.command(name="m_engage")
 async def m_engage(ctx):
-    active_limit = ROOM_MESSAGE_LIMIT if ctx.channel.id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
+    active_limit = get_message_limit(ctx.channel.id)
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
     channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
@@ -396,7 +411,7 @@ async def m_engage(ctx):
 
 @bot.command(name="m_continue")
 async def m_continue(ctx):
-    active_limit = ROOM_MESSAGE_LIMIT if ctx.channel.id in ROOM_CHANNELS else DEFAULT_MESSAGE_LIMIT
+    active_limit = get_message_limit(ctx.channel.id)
     channel_active_states[ctx.channel.id] = True
     channel_message_counts[ctx.channel.id] = 0
     channel_last_activity[ctx.channel.id] = datetime.now().timestamp()
