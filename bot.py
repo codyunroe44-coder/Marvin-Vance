@@ -1,4 +1,5 @@
 import os
+import io
 import random
 import asyncio
 from datetime import datetime
@@ -561,6 +562,99 @@ async def recallall(ctx):
             await ctx.send(f"🧠 **Memory Core Dump:**\n{text[:1900]}")
         else:
             await ctx.send("🧠 Memory core is empty.")
+
+# ---------------------------------------------------------
+# IMAGE & VIDEO GENERATION COMMANDS
+# ---------------------------------------------------------
+@bot.command(name="imagine")
+async def imagine(ctx, *, prompt: str = "a glowing phoenix flying over a magical library at sunset"):
+    try:
+        # If the message (or the message it replies to) has an image attached, edit that image instead
+        source_attachment = None
+        for att in ctx.message.attachments:
+            if att.content_type and att.content_type.startswith("image/"):
+                source_attachment = att
+                break
+        if source_attachment is None and ctx.message.reference and ctx.message.reference.message_id:
+            try:
+                ref_message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+                for att in ref_message.attachments:
+                    if att.content_type and att.content_type.startswith("image/"):
+                        source_attachment = att
+                        break
+            except Exception as e:
+                print(f"Imagine reference fetch error: {e}")
+
+        if source_attachment is not None:
+            image_bytes_in = await source_attachment.read()
+            contents = [prompt, types.Part.from_bytes(data=image_bytes_in, mime_type=source_attachment.content_type)]
+            status_text = f"🖌️ *Reworking that image:* \"{prompt}\"..."
+        else:
+            contents = prompt
+            status_text = f"🎨 *Dreaming up:* \"{prompt}\"..."
+
+        await ctx.send(status_text)
+
+        async with ctx.typing():
+            response = await asyncio.to_thread(
+                ai_client.models.generate_content,
+                model="gemini-2.5-flash-image",
+                contents=contents,
+            )
+
+        image_bytes = None
+        note_text = None
+        if response and response.candidates:
+            for part in response.candidates[0].content.parts:
+                if getattr(part, "inline_data", None) and part.inline_data and part.inline_data.data:
+                    image_bytes = part.inline_data.data
+                elif getattr(part, "text", None):
+                    note_text = part.text
+
+        if image_bytes:
+            await ctx.send(
+                content=f"✨ **Here's your image, {ctx.author.display_name}:** \"{prompt}\"",
+                file=discord.File(io.BytesIO(image_bytes), filename="marvin_imagine.png"),
+            )
+        elif note_text:
+            await ctx.send(f"🤔 *Hmm, the canvas talked back:* {note_text[:1800]}")
+        else:
+            await ctx.send("💥 *Static burst!* My canvas came back blank on that one. Try describing it a little differently?")
+    except Exception as e:
+        print(f"Error in imagine command: {e}")
+        await ctx.send("💥 *Static burst!* Something glitched while I was painting that. Try again in a sec?")
+
+@bot.command(name="video")
+async def video(ctx, *, prompt: str = "Marvin dancing under neon lights in the Sanctuary Garden"):
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("🔒 *That one's locked to the admin booth for now* — video rendering burns the expensive credits!")
+        return
+
+    try:
+        await ctx.send(f"🎬 *Rolling cameras on:* \"{prompt}\" — rendering takes a few minutes, hang tight...")
+
+        # Veo renders server-side and takes minutes; run every SDK call in a thread so the bot stays responsive
+        operation = await asyncio.to_thread(
+            ai_client.models.generate_videos,
+            model="veo-3.0-fast-generate-001",
+            prompt=prompt,
+        )
+        while not operation.done:
+            await asyncio.sleep(15)
+            operation = await asyncio.to_thread(ai_client.operations.get, operation)
+
+        if operation.response and operation.response.generated_videos:
+            generated_video = operation.response.generated_videos[0]
+            video_bytes = await asyncio.to_thread(ai_client.files.download, file=generated_video.video)
+            await ctx.send(
+                content=f"🎬 **Your clip is ready, {ctx.author.display_name}:** \"{prompt}\"",
+                file=discord.File(io.BytesIO(video_bytes), filename="marvin_video.mp4"),
+            )
+        else:
+            await ctx.send("💥 *Static burst!* The render finished but no clip came out the other side.")
+    except Exception as e:
+        print(f"Error in video command: {e}")
+        await ctx.send("💥 *Static burst!* The video render glitched out. Check the logs, Digidad — might be the Veo credits or the model name.")
 
 async def init_db():
     async with DB_POOL.acquire() as conn:
