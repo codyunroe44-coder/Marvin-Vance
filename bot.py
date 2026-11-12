@@ -612,20 +612,21 @@ async def fetch_reference_image(filename):
         print(f"Reference fetch error for {url}: {e}")
     return None, None
 
-def find_characters_in(text, max_refs=3):
-    """Find known characters named in a prompt. Returns [(display name, filename), ...]."""
+def find_characters_in(text):
+    """Find known characters named in a prompt, in the order they are named.
+    Returns [(display name, filename), ...]."""
     lowered = text.lower()
-    found = []
+    matches = []
     seen_files = set()
     for alias, (display, filename) in CHARACTER_REFERENCES.items():
         if filename in seen_files:
             continue
-        if re.search(r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])", lowered):
-            found.append((display, filename))
+        m = re.search(r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])", lowered)
+        if m:
+            matches.append((m.start(), display, filename))
             seen_files.add(filename)
-            if len(found) >= max_refs:
-                break
-    return found
+    matches.sort(key=lambda item: item[0])
+    return [(display, filename) for _, display, filename in matches]
 
 # ---------------------------------------------------------
 # IMAGE & VIDEO GENERATION COMMANDS
@@ -668,7 +669,7 @@ async def imagine(ctx, *, prompt: str = "a glowing phoenix flying over a magical
                         ref_names.append(display)
                 if ref_parts:
                     labels = "; ".join([f"image {i + 1} is {name}" for i, name in enumerate(ref_names)])
-                    contents = [f"Character reference images are attached ({labels}). Match each character's exact appearance from their reference image. Now generate this scene: {prompt}"] + ref_parts
+                    contents = [f"Character reference images are attached ({labels}). Each attached image is a specific named character: match every character's face, hair, and outfit exactly to their reference image. Include EVERY named character in the scene, do not leave anyone out, and never replace a character with an animal, a creature, or an object. Now generate this scene: {prompt}"] + ref_parts
                     status_text = f"🎨 *Dreaming up:* \"{prompt}\" — *using references for {', '.join(ref_names)}*..."
 
         await ctx.send(status_text)
