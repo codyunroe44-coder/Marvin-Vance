@@ -1,8 +1,10 @@
 import os
 import io
 import random
+import re
 import asyncio
 from datetime import datetime
+import aiohttp
 import asyncpg
 import discord
 from discord.ext import commands, tasks
@@ -19,6 +21,7 @@ VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 ELEVENLABS_DUET_VOICE_ID = os.getenv("ELEVENLABS_DUET_VOICE_ID")
+REFERENCES_BASE_URL = os.getenv("REFERENCES_BASE_URL", "").rstrip("/")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
@@ -564,6 +567,64 @@ async def recallall(ctx):
             await ctx.send("🧠 Memory core is empty.")
 
 # ---------------------------------------------------------
+# CHARACTER REFERENCE IMAGES
+# Host the reference images in one folder (filenames below) and set the
+# REFERENCES_BASE_URL environment variable to that folder's URL. When a
+# !imagine prompt names a character, Marvin fetches their reference
+# image and generates from it so the character looks like themselves.
+# ---------------------------------------------------------
+CHARACTER_REFERENCES = {
+    # name or alias in the prompt : (display name, hosted filename)
+    "marvin": ("Marvin", "marvin.jpg"),
+    "luca": ("Luca", "luca.jpg"),
+    "lucas": ("Lucas", "lucas.jpg"),
+    "timmy": ("Timmy", "timmy.jpg"),
+    "ryland": ("Ryland", "ryland.jpg"),
+    "nolan": ("Nolan", "nolan.jpg"),
+    "tyler": ("Tyler", "tyler.jpg"),
+    "cole": ("Cole", "cole.jpg"),
+    "logan": ("Logan", "logan.jpg"),
+    "kieran": ("Lord Kieran", "kieran.jpg"),
+    "lord kieran": ("Lord Kieran", "kieran.jpg"),
+    "fire phoenix": ("Fire Phoenix", "fire_phoenix.jpg"),
+    "kid lightning": ("Kid Lightning", "kid_lightning.jpg"),
+    "colin": ("Colin Scorpio", "colin.jpg"),
+    "colin scorpio": ("Colin Scorpio", "colin.jpg"),
+    "kid omen": ("Kid Omen", "kid_omen.jpg"),
+    "general near": ("General Near", "general_near.jpg"),
+}
+
+async def fetch_reference_image(filename):
+    """Download a hosted character reference image. Returns (bytes, mime_type) or (None, None)."""
+    if not REFERENCES_BASE_URL:
+        return None, None
+    url = f"{REFERENCES_BASE_URL}/{filename}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    return await resp.read(), resp.content_type or "image/jpeg"
+                print(f"Reference fetch failed ({resp.status}): {url}")
+    except Exception as e:
+        print(f"Reference fetch error for {url}: {e}")
+    return None, None
+
+def find_characters_in(text, max_refs=3):
+    """Find known characters named in a prompt. Returns [(display name, filename), ...]."""
+    lowered = text.lower()
+    found = []
+    seen_files = set()
+    for alias, (display, filename) in CHARACTER_REFERENCES.items():
+        if filename in seen_files:
+            continue
+        if re.search(r"(?<![a-z])" + re.escape(alias) + r"(?![a-z])", lowered):
+            found.append((display, filename))
+            seen_files.add(filename)
+            if len(found) >= max_refs:
+                break
+    return found
+
+# ---------------------------------------------------------
 # IMAGE & VIDEO GENERATION COMMANDS
 # ---------------------------------------------------------
 @bot.command(name="imagine")
@@ -592,6 +653,19 @@ async def imagine(ctx, *, prompt: str = "a glowing phoenix flying over a magical
         else:
             contents = prompt
             status_text = f"🎨 *Dreaming up:* \"{prompt}\"..."
+            # No manual image attached: pull hosted references for characters named in the prompt
+            if REFERENCES_BASE_URL:
+                ref_parts = []
+                ref_names = []
+                for display, filename in find_characters_in(prompt):
+                    ref_bytes, ref_mime = await fetch_reference_image(filename)
+                    if ref_bytes:
+                        ref_parts.append(types.Part.from_bytes(data=ref_bytes, mime_type=ref_mime))
+                        ref_names.append(display)
+                if ref_parts:
+                    labels = "; ".join([f"image {i + 1} is {name}" for i, name in enumerate(ref_names)])
+                    contents = [f"Character reference images are attached ({labels}). Match each character's exact appearance from their reference image. Now generate this scene: {prompt}"] + ref_parts
+                    status_text = f"🎨 *Dreaming up:* \"{prompt}\" — *using references for {', '.join(ref_names)}*..."
 
         await ctx.send(status_text)
 
