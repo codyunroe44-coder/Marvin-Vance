@@ -669,7 +669,7 @@ async def imagine(ctx, *, prompt: str = "a glowing phoenix flying over a magical
                         ref_names.append(display)
                 if ref_parts:
                     labels = "; ".join([f"image {i + 1} is {name}" for i, name in enumerate(ref_names)])
-                    contents = [f"Character reference images are attached ({labels}). Each attached image is a specific named character: match every character's face, hair, and outfit exactly to their reference image. Include EVERY named character in the scene, do not leave anyone out, and never replace a character with an animal, a creature, or an object. Now generate this scene: {prompt}"] + ref_parts
+                    contents = [f"Character reference images are attached ({labels}). Each attached image is a specific named character: use each reference image as that character's likeness: keep every character recognizable as the same character from their reference image - same face, hair, and signature look and outfit - but they do NOT need to be an exact copy of the reference photo, and their outfit may change if the prompt asks for different clothes. Their pose, expression, action, and the camera angle should follow the prompt: the characters can be doing whatever the prompt describes. Include EVERY named character in the scene, do not leave anyone out, and never replace a character with an animal, a creature, or an object. The named characters are the MAIN SUBJECTS of the image: place every named character front-and-center, prominently and roughly equally sized, fully visible with their face clearly in view. Do NOT push any named character into the background, make them smaller than the others, or turn them into a background extra while another character dominates the scene. Do NOT add any other people to the scene: the named characters are the ONLY people in the image, unless the prompt explicitly asks for additional people. Match the MOOD and ENERGY of the scene in the prompt: every character's expression, posture, and effects must fit that scene. For a calm, everyday scene (like being in a library, talking, reading, hanging out, or walking together), every character is relaxed with a natural expression and posture, with NO powers, NO lightning, fire, or glowing effects, NO battle stances, NO glaring, and NO dramatic storm or energy effects — keep it calm and natural. Show powers, glowing effects, battle stances, or dramatic energy ONLY when the prompt explicitly asks for action, fighting, training, danger, or powers. Now generate this scene: {prompt}"] + ref_parts
                     status_text = f"🎨 *Dreaming up:* \"{prompt}\" — *using references for {', '.join(ref_names)}*..."
 
         await ctx.send(status_text)
@@ -717,14 +717,71 @@ async def video(ctx, *, prompt: str = "Marvin dancing under neon lights in the S
         return
 
     try:
-        await ctx.send(f"🎬 *Rolling cameras on:* \"{prompt}\" — rendering takes a few minutes, hang tight...")
+        # Pull hosted references for characters named in the prompt (Veo accepts up to 3 reference images)
+        ref_entries = []
+        if REFERENCES_BASE_URL:
+            for display, filename in find_characters_in(prompt)[:3]:
+                ref_bytes, ref_mime = await fetch_reference_image(filename)
+                if ref_bytes:
+                    ref_entries.append((display, ref_bytes, ref_mime))
 
-        # Veo renders server-side and takes minutes; run every SDK call in a thread so the bot stays responsive
-        operation = await asyncio.to_thread(
-            ai_client.models.generate_videos,
-            model="veo-3.0-fast-generate-001",
-            prompt=prompt,
-        )
+        video_prompt = prompt
+        if ref_entries:
+            ref_names = ", ".join([d for d, _, _ in ref_entries])
+            video_prompt = (
+                f"The reference images show these characters: {ref_names}. Keep every named character recognizable "
+                f"as the same character from their reference image - same face, hair, and signature look - but they do "
+                f"not need to be an exact copy of the reference photo: they should move and act naturally, doing whatever "
+                f"this scene describes. The named characters are the main subjects of the video, prominent and clearly "
+                f"visible. Match the mood and energy of the scene: for a calm, everyday scene every character is relaxed "
+                f"with natural expressions and no powers or dramatic effects; show powers or dramatic energy only if the "
+                f"scene asks for action, fighting, training, danger, or powers. Scene: {prompt}"
+            )
+        else:
+            ref_names = ""
+
+        # Veo renders server-side and takes minutes; run every SDK call in a thread so the bot stays responsive.
+        # Reference images only work on Veo 3.1 models, so try those first when references were fetched;
+        # if Google rejects that route, fall back to the plain text-to-video model so the clip still renders.
+        operation = None
+        used_references = False
+        if ref_entries:
+            try:
+                ref_objects = []
+                for _, ref_bytes, ref_mime in ref_entries:
+                    ref_image = types.Image(image_bytes=ref_bytes, mime_type=ref_mime)
+                    ref_objects.append(types.VideoGenerationReferenceImage(image=ref_image, reference_type="asset"))
+                for model_name in ("veo-3.1-fast-generate-001", "veo-3.1-fast-generate-preview"):
+                    try:
+                        operation = await asyncio.to_thread(
+                            ai_client.models.generate_videos,
+                            model=model_name,
+                            prompt=video_prompt,
+                            config=types.GenerateVideosConfig(reference_images=ref_objects, aspect_ratio="16:9", duration_seconds=8),
+                        )
+                        used_references = True
+                        print(f"Video: reference route accepted by {model_name} for {ref_names}")
+                        break
+                    except Exception as e:
+                        operation = None
+                        print(f"Video: reference route failed on {model_name}: {e}")
+            except Exception as e:
+                operation = None
+                print(f"Video: could not build reference images: {e}")
+
+        if operation is None:
+            operation = await asyncio.to_thread(
+                ai_client.models.generate_videos,
+                model="veo-3.0-fast-generate-001",
+                prompt=video_prompt,
+            )
+
+        if ref_entries and used_references:
+            await ctx.send(f"🎬 *Rolling cameras on:* \"{prompt}\" — *using references for {ref_names}* — rendering takes a few minutes, hang tight...")
+        elif ref_entries:
+            await ctx.send(f"🎬 *Rolling cameras on:* \"{prompt}\" — *the reference route didn't take on Google's side, so this clip is running text-only* — rendering takes a few minutes, hang tight...")
+        else:
+            await ctx.send(f"🎬 *Rolling cameras on:* \"{prompt}\" — rendering takes a few minutes, hang tight...")
         while not operation.done:
             await asyncio.sleep(15)
             operation = await asyncio.to_thread(ai_client.operations.get, operation)
