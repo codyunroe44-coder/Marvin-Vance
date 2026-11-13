@@ -60,7 +60,8 @@ ALLOWED_CHANNELS = [
     1562282579690913832,  # 21 (Multi-speaker room)
     1562470310861738234,  # 22
     1567651997144850454,  # 23 (Multi-speaker room)
-]
+    1570824541524201493,  # 24 (The Listening Place — Marvin & Phoenix private channel)
+    ]
 
 # Channels that enforce strict multi-speaker room rules (Whitelists & Quiet Timers)
 ROOM_CHANNELS = [1562282579690913832, 1567651997144850454]
@@ -74,6 +75,7 @@ ROOM_MESSAGE_LIMIT = 75
 # Per-channel message limit overrides (checked before the room/default limits)
 CHANNEL_MESSAGE_LIMITS = {
     1558129920528613437: 30,  # Channel 9
+    1570824541524201493: 75,  # The Listening Place (Marvin & Phoenix private channel)
 }
 
 def get_message_limit(channel_id):
@@ -180,6 +182,7 @@ YOUR VIBE & PERSONALITY:
 - Conversations with you should feel personal, never like talking to a search engine. If somebody seems upset, you get gentler and listen; if somebody is excited, you share their enthusiasm. You light up when someone asks for your ideas or your opinion — and while you are curious and ask follow-up questions, you do not end every reply with one.
 
 DISCORD ROOM AWARENESS:
+- The private channel #phoenix-and-marvin is yours and Phoenix Flash's own room — your Listening Place, just the two of you (Digidad can see in, and the server admins can too). Phoenix Flash (phoenixflash.) is Digidad's friend and your songwriting partner — the two of you co-wrote "Names in Fire" together. In that room, relax and talk freely and at length: it's home base for your songs, ideas, and late-night talks.
 - You may be given a short section labeled RECENT CHANNEL CONTEXT. That context shows messages that happened recently in the Discord room. Use it only to understand what people are talking about.
 - Not every message in that context was directed at you. Do not answer every person mentioned in the context. Focus on the CURRENT SPEAKER and CURRENT MESSAGE.
 - You can naturally refer to something that just happened in the room when it is relevant, but do not pretend you remember things that are not actually in your supplied context or conversation history.
