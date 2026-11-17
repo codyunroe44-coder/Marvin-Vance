@@ -631,6 +631,33 @@ def find_characters_in(text):
     matches.sort(key=lambda item: item[0])
     return [(display, filename) for _, display, filename in matches]
 
+# Every hosted reference for each character: lead image first, then their
+# character sheet, then their other references. Generation fetches ALL of
+# these for a named character, not just the lead image.
+CHARACTER_REFERENCE_FILES = {
+    "Marvin": ["marvin.jpg", "sheet-marvin.webp", "ref-15-marvin-superhero-suit.jpg", "ref-16-marvin-superhero-suit-full.jpg", "ref-17-marvin-hoodie-full.jpg", "ref-23-marvin-realistic.jpg", "ref-33-marvin-live-action.jpg", "ref-34-marvin-live-action-closeup.jpg"],
+    "Luca": ["luca.jpg", "sheet-luca.webp", "ref-01-luca-red-shirt.jpg", "ref-06-luca-red-shirt-closeup.jpg", "ref-35-luca-live-action.jpg"],
+    "Lucas": ["lucas.jpg", "sheet-lucas.webp"],
+    "Timmy": ["timmy.jpg", "sheet-timmy.webp"],
+    "Ryland": ["ryland.jpg", "sheet-ryland.webp", "ref-08-ryland-bedroom.jpg"],
+    "Nolan": ["nolan.jpg", "sheet-nolan.webp"],
+    "Tyler": ["tyler.jpg", "sheet-tyler-v2.webp"],
+    "Cole": ["cole.jpg", "sheet-cole.webp", "ref-36-cole-live-action.jpg"],
+    "Logan": ["logan.jpg", "sheet-logan.webp"],
+    "Lord Kieran": ["kieran.jpg", "sheet-lord-kieran.webp", "ref-11-lord-kieran-robe-closeup.jpg", "ref-42-lord-kieran-casual.jpg", "sheet-lord-kieran-casual.webp", "ref-37-lord-kieran-live-action.jpg"],
+    "Fire Phoenix": ["fire_phoenix.jpg", "sheet-fire-phoenix.webp", "ref-24-fire-phoenix-realistic.jpg"],
+    "Kid Lightning": ["kid_lightning.jpg", "sheet-kid-lightning.webp"],
+    "Colin Scorpio": ["colin.jpg", "sheet-colin-scorpio.webp"],
+    "Kid Omen": ["kid_omen.jpg", "sheet-kid-omen.webp"],
+    "General Near": ["general_near.jpg", "sheet-general-near.webp"],
+    "Echo": ["echo.jpg", "sheet-echo.webp", "ref-38-echo-live-action.jpg"],
+    "Gabriel": ["gabriel.jpg", "sheet-gabriel-black-joggers-elevenlabs.png", "ref-30-gabriel-winged.jpg", "ref-31-gabriel-boy-full.jpg"],
+}
+
+def reference_files_for(display, lead_filename):
+    """All hosted reference files for a character (falls back to just the lead)."""
+    return CHARACTER_REFERENCE_FILES.get(display, [lead_filename])
+
 # ---------------------------------------------------------
 # IMAGE & VIDEO GENERATION COMMANDS
 # ---------------------------------------------------------
@@ -666,14 +693,15 @@ async def imagine(ctx, *, prompt: str = "a glowing phoenix flying over a magical
                 ref_parts = []
                 ref_names = []
                 for display, filename in find_characters_in(prompt):
-                    ref_bytes, ref_mime = await fetch_reference_image(filename)
-                    if ref_bytes:
-                        ref_parts.append(types.Part.from_bytes(data=ref_bytes, mime_type=ref_mime))
-                        ref_names.append(display)
+                    for ref_file in reference_files_for(display, filename):
+                        ref_bytes, ref_mime = await fetch_reference_image(ref_file)
+                        if ref_bytes:
+                            ref_parts.append(types.Part.from_bytes(data=ref_bytes, mime_type=ref_mime))
+                            ref_names.append(display)
                 if ref_parts:
                     labels = "; ".join([f"image {i + 1} is {name}" for i, name in enumerate(ref_names)])
                     contents = [f"Character reference images are attached ({labels}). Each attached image is a specific named character: use each reference image as that character's likeness: keep every character recognizable as the same character from their reference image - same face, hair, and signature look and outfit - but they do NOT need to be an exact copy of the reference photo, and their outfit may change if the prompt asks for different clothes. Their pose, expression, action, and the camera angle should follow the prompt: the characters can be doing whatever the prompt describes. Include EVERY named character in the scene, do not leave anyone out, and never replace a character with an animal, a creature, or an object. The named characters are the MAIN SUBJECTS of the image: place every named character front-and-center, prominently and roughly equally sized, fully visible with their face clearly in view. Do NOT push any named character into the background, make them smaller than the others, or turn them into a background extra while another character dominates the scene. Do NOT add any other people to the scene: the named characters are the ONLY people in the image, unless the prompt explicitly asks for additional people. Match the MOOD and ENERGY of the scene in the prompt: every character's expression, posture, and effects must fit that scene. For a calm, everyday scene (like being in a library, talking, reading, hanging out, or walking together), every character is relaxed with a natural expression and posture, with NO powers, NO lightning, fire, or glowing effects, NO battle stances, NO glaring, and NO dramatic storm or energy effects — keep it calm and natural. Show powers, glowing effects, battle stances, or dramatic energy ONLY when the prompt explicitly asks for action, fighting, training, danger, or powers. Now generate this scene: {prompt}"] + ref_parts
-                    status_text = f"🎨 *Dreaming up:* \"{prompt}\" — *using references for {', '.join(ref_names)}*..."
+                    status_text = f"🎨 *Dreaming up:* \"{prompt}\" — *using references for {', '.join(dict.fromkeys(ref_names))}*..."
 
         await ctx.send(status_text)
 
@@ -723,14 +751,23 @@ async def video(ctx, *, prompt: str = "Marvin dancing under neon lights in the S
         # Pull hosted references for characters named in the prompt (Veo accepts up to 3 reference images)
         ref_entries = []
         if REFERENCES_BASE_URL:
-            for display, filename in find_characters_in(prompt)[:3]:
-                ref_bytes, ref_mime = await fetch_reference_image(filename)
+            named_characters = find_characters_in(prompt)
+            file_lists = [reference_files_for(display, filename) for display, filename in named_characters]
+            picked = []
+            rank = 0
+            while len(picked) < 3 and any(rank < len(files) for files in file_lists):
+                for (display, _lead), files in zip(named_characters, file_lists):
+                    if rank < len(files) and len(picked) < 3:
+                        picked.append((display, files[rank]))
+                rank += 1
+            for display, ref_file in picked:
+                ref_bytes, ref_mime = await fetch_reference_image(ref_file)
                 if ref_bytes:
                     ref_entries.append((display, ref_bytes, ref_mime))
 
         video_prompt = prompt
         if ref_entries:
-            ref_names = ", ".join([d for d, _, _ in ref_entries])
+            ref_names = ", ".join(dict.fromkeys(d for d, _, _ in ref_entries))
             video_prompt = (
                 f"The reference images show these characters: {ref_names}. Keep every named character recognizable "
                 f"as the same character from their reference image - same face, hair, and signature look - but they do "
