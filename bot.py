@@ -636,7 +636,7 @@ def find_characters_in(text):
 # these for a named character, not just the lead image.
 CHARACTER_REFERENCE_FILES = {
     "Marvin": ["marvin.jpg", "sheet-marvin.webp", "ref-15-marvin-superhero-suit.jpg", "ref-16-marvin-superhero-suit-full.jpg", "ref-17-marvin-hoodie-full.jpg", "ref-23-marvin-realistic.jpg", "ref-33-marvin-live-action.jpg", "ref-34-marvin-live-action-closeup.jpg"],
-    "Luca": ["luca.jpg", "sheet-luca.webp", "ref-01-luca-red-shirt.jpg", "ref-06-luca-red-shirt-closeup.jpg", "ref-35-luca-live-action.jpg"],
+    "Luca": ["luca.jpg", "sheet-luca.webp", "ref-01-luca-red-shirt.jpg", "ref-06-luca-red-shirt-closeup.jpg", "sheet-luca-red-shirt.webp", "ref-35-luca-live-action.jpg"],
     "Lucas": ["lucas.jpg", "sheet-lucas.webp"],
     "Timmy": ["timmy.jpg", "sheet-timmy.webp"],
     "Ryland": ["ryland.jpg", "sheet-ryland.webp", "ref-08-ryland-bedroom.jpg"],
