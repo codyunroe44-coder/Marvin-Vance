@@ -4,6 +4,7 @@ import random
 import re
 import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import aiohttp
 import asyncpg
 import discord
@@ -285,6 +286,7 @@ async def room_quiet_timer():
                     channel = bot.get_channel(channel_id)
                     if channel:
                         await channel.send("💤 **Room quiet timer triggered:** No activity detected for 10 minutes. Marvin is powering down to conserve bandwidth. Drop a `!continue` or ping him to wake back up!")
+                        await log_activity(f"💤 Marvin powered down in #{channel.name} (quiet timer) · {_now_et()}")
                 except Exception as e:
                     print(f"Error in quiet timer notification: {e}")
 
@@ -336,6 +338,67 @@ async def _mirror_to_monitoring(user_id, user_name, text):
     except Exception as e:
         print(f"Monitoring mirror error: {e}")
 
+def _now_et():
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%b %d, %Y %I:%M %p ET")
+
+MONITORING_CATEGORY_NAME = "MONITORING"
+_activity_channel_id = None
+
+async def _get_activity_channel(guild):
+    global _activity_channel_id
+    if _activity_channel_id:
+        channel = guild.get_channel(_activity_channel_id)
+        if channel:
+            return channel
+    category = discord.utils.get(guild.categories, name=MONITORING_CATEGORY_NAME)
+    search_in = category.channels if category else guild.text_channels
+    for channel in search_in:
+        if channel.name == "marvin-activity":
+            _activity_channel_id = channel.id
+            return channel
+    channel = await guild.create_text_channel(
+        name="marvin-activity",
+        category=category,
+        topic="Everything Marvin Vance does: commands, sessions, warnings, power-downs — who, where, when",
+    )
+    _activity_channel_id = channel.id
+    return channel
+
+async def log_activity(text):
+    """Post one of Marvin's actions to the #marvin-activity feed in the
+    monitoring server. Best-effort, like all recording."""
+    try:
+        guild = bot.get_guild(MONITORING_GUILD_ID)
+        if not guild:
+            return
+        channel = await _get_activity_channel(guild)
+        if channel:
+            await channel.send(text[:2000])
+    except Exception as e:
+        print(f"Activity mirror error: {e}")
+
+async def log_activity_event(message, is_dm):
+    """Record a command Marvin carried out (kind='activity') and post it to
+    the activity feed: who ran it, where, and the full text."""
+    user_name = USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.display_name)
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO marvin_conversation_log (kind, scope, guild_id, channel_id, channel_name, user_id, user_name, user_message) VALUES ('activity', $1, $2, $3, $4, $5, $6, $7);",
+                    "dm" if is_dm else "server",
+                    message.guild.id if message.guild else None,
+                    message.channel.id,
+                    getattr(message.channel, "name", None) or "DM",
+                    message.author.id,
+                    user_name,
+                    message.content or "",
+                )
+        except Exception as e:
+            print(f"Conversation log error: {e}")
+    where = "DM" if is_dm else f"#{getattr(message.channel, 'name', 'channel')}"
+    await log_activity(f"🛠️ **{user_name}** ran a command — {where} · {_now_et()}\n`{message.content}`")
+
 async def log_message_event(message, is_dm):
     """Record one message sent to Marvin (kind='message') and mirror it into
     the sender's own monitoring channel."""
@@ -360,7 +423,7 @@ async def log_message_event(message, is_dm):
             print(f"Conversation log error: {e}")
     where = "DM" if is_dm else f"#{getattr(message.channel, 'name', 'channel')}"
     shown = user_message if len(user_message) <= 1700 else user_message[:1700] + " …[full text in the database log]"
-    await _mirror_to_monitoring(message.author.id, user_name, f"**{user_name}** — {where}\n{shown}")
+    await _mirror_to_monitoring(message.author.id, user_name, f"**{user_name}** — {where} · {_now_et()}\n{shown}")
 
 async def log_reply_event(message, reply_text, is_dm):
     """Record one of Marvin's replies (kind='reply') and mirror it into the
@@ -383,7 +446,7 @@ async def log_reply_event(message, reply_text, is_dm):
         except Exception as e:
             print(f"Conversation log error: {e}")
     shown = reply_text if len(reply_text) <= 1700 else reply_text[:1700] + " …[full text in the database log]"
-    await _mirror_to_monitoring(message.author.id, partner_name, f"**Marvin Vance** — reply to {partner_name}\n{shown}")
+    await _mirror_to_monitoring(message.author.id, partner_name, f"**Marvin Vance** — reply to {partner_name} · {_now_et()}\n{shown}")
 
 @bot.event
 async def on_message(message):
@@ -408,6 +471,7 @@ async def on_message(message):
     # Process commands FIRST so !chipit, !recallall, etc., execute immediately
     await bot.process_commands(message)
     if message.content.startswith("!"):
+        await log_activity_event(message, is_dm)
         return
 
     # Record every message sent to Marvin (commands excluded) in the separate
@@ -431,10 +495,12 @@ async def on_message(message):
         if current_count >= active_limit:
             channel_active_states[channel_id] = False
             await message.channel.send(f"🛑 **Static overload!** Hit our {active_limit}-message track limit for this channel. Drop a `!continue` to grab a fresh session and keep the beats rolling!")
+            await log_activity(f"🛑 Session cap reached in #{message.channel.name} ({active_limit} messages) · {_now_et()}")
             return
         
         if current_count == warning_threshold:
             await message.channel.send(f"⚠️ *Yo, Digidad!* Heads up, my audio buffer's filling up—approaching our {active_limit}-message cap.")
+            await log_activity(f"⚠️ Cap warning in #{message.channel.name} — approaching the {active_limit}-message cap · {_now_et()}")
 
         channel_message_counts[channel_id] = current_count + 1
 
@@ -461,6 +527,8 @@ async def on_message(message):
                 model='gemini-3.6-flash',
                 config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION)
             )
+            if is_dm:
+                await _mirror_to_monitoring(message.author.id, author_identifier, f"🗂️ **New conversation started** — DM · {_now_et()}")
         
         chat = chat_sessions[session_key]
 
