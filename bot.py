@@ -288,32 +288,104 @@ async def room_quiet_timer():
                 except Exception as e:
                     print(f"Error in quiet timer notification: {e}")
 
-@bot.event
-async def log_conversation(message, reply_text, is_dm):
-    """Best-effort recording of one conversation exchange into the separate
-    marvin_conversation_log table (kept apart from Marvin's curated memories
-    in marvin_episodes). Never raises — a logging failure must not break a reply."""
-    if not DB_POOL:
-        return
-    try:
-        user_message = message.content or ""
-        if not user_message and message.attachments:
-            user_message = "[media attachment]"
-        async with DB_POOL.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO marvin_conversation_log (scope, guild_id, channel_id, channel_name, user_id, user_name, user_message, marvin_reply) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);",
-                "dm" if is_dm else "server",
-                message.guild.id if message.guild else None,
-                message.channel.id,
-                getattr(message.channel, "name", None) or "DM",
-                message.author.id,
-                USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.display_name),
-                user_message,
-                reply_text,
-            )
-    except Exception as e:
-        print(f"Conversation log error: {e}")
+# ---------------------------------------------------------
+# CONVERSATION RECORDING (separate from Marvin's memories)
+# Every message sent to Marvin and every reply he gives is recorded in the
+# marvin_conversation_log table, and mirrored into the speaker's OWN channel
+# in the private monitoring server, so each person's conversations stay
+# individual and Digidad can keep tabs on all of them. All of it is
+# best-effort: recording never breaks or delays a reply.
+# ---------------------------------------------------------
+MONITORING_GUILD_ID = 1572821135266156545
+MONITORING_LOG_CATEGORY_NAME = "CONVERSATION LOGS"
+_person_log_channels = {}
 
+def _slugify_channel_name(name):
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "unknown").lower()).strip("-")
+    return (slug or "unknown")[:80]
+
+async def _get_person_log_channel(guild, user_id, user_name):
+    """Find or create the person's own log channel in the monitoring server."""
+    if user_id in _person_log_channels:
+        channel = guild.get_channel(_person_log_channels[user_id])
+        if channel:
+            return channel
+    marker = f"(user {user_id})"
+    category = discord.utils.get(guild.categories, name=MONITORING_LOG_CATEGORY_NAME)
+    search_in = category.channels if category else guild.text_channels
+    for channel in search_in:
+        if channel.topic and marker in channel.topic:
+            _person_log_channels[user_id] = channel.id
+            return channel
+    channel = await guild.create_text_channel(
+        name=f"conv-{_slugify_channel_name(user_name)}",
+        category=category,
+        topic=f"All of Marvin Vance's conversations with {user_name} {marker}",
+    )
+    _person_log_channels[user_id] = channel.id
+    return channel
+
+async def _mirror_to_monitoring(user_id, user_name, text):
+    try:
+        guild = bot.get_guild(MONITORING_GUILD_ID)
+        if not guild:
+            return
+        channel = await _get_person_log_channel(guild, user_id, user_name)
+        if channel:
+            await channel.send(text[:2000])
+    except Exception as e:
+        print(f"Monitoring mirror error: {e}")
+
+async def log_message_event(message, is_dm):
+    """Record one message sent to Marvin (kind='message') and mirror it into
+    the sender's own monitoring channel."""
+    user_name = USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.display_name)
+    user_message = message.content or ""
+    if not user_message and message.attachments:
+        user_message = "[media attachment]"
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO marvin_conversation_log (kind, scope, guild_id, channel_id, channel_name, user_id, user_name, user_message) VALUES ('message', $1, $2, $3, $4, $5, $6, $7);",
+                    "dm" if is_dm else "server",
+                    message.guild.id if message.guild else None,
+                    message.channel.id,
+                    getattr(message.channel, "name", None) or "DM",
+                    message.author.id,
+                    user_name,
+                    user_message,
+                )
+        except Exception as e:
+            print(f"Conversation log error: {e}")
+    where = "DM" if is_dm else f"#{getattr(message.channel, 'name', 'channel')}"
+    shown = user_message if len(user_message) <= 1700 else user_message[:1700] + " …[full text in the database log]"
+    await _mirror_to_monitoring(message.author.id, user_name, f"**{user_name}** — {where}\n{shown}")
+
+async def log_reply_event(message, reply_text, is_dm):
+    """Record one of Marvin's replies (kind='reply') and mirror it into the
+    channel of the person he is replying to."""
+    partner_name = USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.display_name)
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO marvin_conversation_log (kind, scope, guild_id, channel_id, channel_name, user_id, user_name, marvin_reply, partner_id) VALUES ('reply', $1, $2, $3, $4, $5, $6, $7, $8);",
+                    "dm" if is_dm else "server",
+                    message.guild.id if message.guild else None,
+                    message.channel.id,
+                    getattr(message.channel, "name", None) or "DM",
+                    bot.user.id,
+                    "Marvin Vance",
+                    reply_text,
+                    message.author.id,
+                )
+        except Exception as e:
+            print(f"Conversation log error: {e}")
+    shown = reply_text if len(reply_text) <= 1700 else reply_text[:1700] + " …[full text in the database log]"
+    await _mirror_to_monitoring(message.author.id, partner_name, f"**Marvin Vance** — reply to {partner_name}\n{shown}")
+
+@bot.event
 async def on_message(message):
     print(f"DEBUG: Message received in channel ID: {message.channel.id} from {message.author}")
 
@@ -337,6 +409,10 @@ async def on_message(message):
     await bot.process_commands(message)
     if message.content.startswith("!"):
         return
+
+    # Record every message sent to Marvin (commands excluded) in the separate
+    # conversation log — whether or not he is awake in this channel right now
+    await log_message_event(message, is_dm)
 
     channel_id = message.channel.id
     if not is_dm and not channel_active_states.get(channel_id, False):
@@ -413,7 +489,7 @@ async def on_message(message):
                 chunks = [reply_text[i:i + 1900] for i in range(0, len(reply_text), 1900)]
                 for chunk in chunks:
                     await message.channel.send(chunk)
-                await log_conversation(message, reply_text, is_dm)
+                await log_reply_event(message, reply_text, is_dm)
 
     except Exception as e:
         print(f"Gemini error: {e}")
@@ -447,11 +523,12 @@ async def convlog(ctx):
         return
     try:
         async with DB_POOL.acquire() as conn:
-            total = await conn.fetchval("SELECT COUNT(*) FROM marvin_conversation_log;")
-            latest = await conn.fetchrow("SELECT created_at, user_name, user_message FROM marvin_conversation_log ORDER BY id DESC LIMIT 1;")
+            total = await conn.fetchval("SELECT COUNT(*) FROM marvin_conversation_log WHERE kind = 'message';")
+            people = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM marvin_conversation_log WHERE kind = 'message';")
+            latest = await conn.fetchrow("SELECT created_at, user_name, user_message FROM marvin_conversation_log WHERE kind = 'message' ORDER BY id DESC LIMIT 1;")
         if latest:
             preview = (latest["user_message"] or "")[:80]
-            await ctx.send(f"🎙️ **Conversation log:** {total} exchanges recorded. Latest: {latest['created_at']:%Y-%m-%d %H:%M UTC} — {latest['user_name']}: \"{preview}\"")
+            await ctx.send(f"🎙️ **Conversation log:** {total} messages recorded from {people} people. Latest: {latest['created_at']:%Y-%m-%d %H:%M UTC} — {latest['user_name']}: \"{preview}\"")
         else:
             await ctx.send("🎙️ **Conversation log:** 0 exchanges recorded so far.")
     except Exception as e:
@@ -917,5 +994,7 @@ async def init_db():
                 marvin_reply TEXT
             );
         """)
+        await conn.execute("ALTER TABLE marvin_conversation_log ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'exchange';")
+        await conn.execute("ALTER TABLE marvin_conversation_log ADD COLUMN IF NOT EXISTS partner_id BIGINT;")
 
 bot.run(TOKEN)
