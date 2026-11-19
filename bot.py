@@ -289,6 +289,31 @@ async def room_quiet_timer():
                     print(f"Error in quiet timer notification: {e}")
 
 @bot.event
+async def log_conversation(message, reply_text, is_dm):
+    """Best-effort recording of one conversation exchange into the separate
+    marvin_conversation_log table (kept apart from Marvin's curated memories
+    in marvin_episodes). Never raises — a logging failure must not break a reply."""
+    if not DB_POOL:
+        return
+    try:
+        user_message = message.content or ""
+        if not user_message and message.attachments:
+            user_message = "[media attachment]"
+        async with DB_POOL.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO marvin_conversation_log (scope, guild_id, channel_id, channel_name, user_id, user_name, user_message, marvin_reply) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);",
+                "dm" if is_dm else "server",
+                message.guild.id if message.guild else None,
+                message.channel.id,
+                getattr(message.channel, "name", None) or "DM",
+                message.author.id,
+                USER_IDENTITY_OVERRIDES.get(message.author.id, message.author.display_name),
+                user_message,
+                reply_text,
+            )
+    except Exception as e:
+        print(f"Conversation log error: {e}")
+
 async def on_message(message):
     print(f"DEBUG: Message received in channel ID: {message.channel.id} from {message.author}")
 
@@ -388,6 +413,7 @@ async def on_message(message):
                 chunks = [reply_text[i:i + 1900] for i in range(0, len(reply_text), 1900)]
                 for chunk in chunks:
                     await message.channel.send(chunk)
+                await log_conversation(message, reply_text, is_dm)
 
     except Exception as e:
         print(f"Gemini error: {e}")
@@ -411,6 +437,26 @@ async def stop_bot(ctx):
         return
     channel_active_states[ctx.channel.id] = False
     await ctx.send("🛑 **Master fader pulled!** System paused and context safely saved to memory. Hit `!continue` whenever you're ready to spin it back up.")
+
+@bot.command(name="convlog")
+async def convlog(ctx):
+    if ctx.author.id not in ADMIN_IDS:
+        return
+    if not DB_POOL:
+        await ctx.send("🎙️ Conversation log is offline — no database connection.")
+        return
+    try:
+        async with DB_POOL.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM marvin_conversation_log;")
+            latest = await conn.fetchrow("SELECT created_at, user_name, user_message FROM marvin_conversation_log ORDER BY id DESC LIMIT 1;")
+        if latest:
+            preview = (latest["user_message"] or "")[:80]
+            await ctx.send(f"🎙️ **Conversation log:** {total} exchanges recorded. Latest: {latest['created_at']:%Y-%m-%d %H:%M UTC} — {latest['user_name']}: \"{preview}\"")
+        else:
+            await ctx.send("🎙️ **Conversation log:** 0 exchanges recorded so far.")
+    except Exception as e:
+        print(f"convlog error: {e}")
+        await ctx.send("🎙️ Conversation log check glitched — see the console, Digidad.")
 
 # ---------------------------------------------------------
 # UNIQUE RESTRICTED COMMANDS (Kept for backwards compatibility)
@@ -855,6 +901,20 @@ async def init_db():
                 speaker TEXT NOT NULL,
                 content TEXT,
                 embedding vector
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS marvin_conversation_log (
+                id SERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                scope TEXT,
+                guild_id BIGINT,
+                channel_id BIGINT NOT NULL,
+                channel_name TEXT,
+                user_id BIGINT NOT NULL,
+                user_name TEXT,
+                user_message TEXT,
+                marvin_reply TEXT
             );
         """)
 
