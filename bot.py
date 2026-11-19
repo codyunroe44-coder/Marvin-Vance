@@ -307,7 +307,11 @@ def _slugify_channel_name(name):
     return (slug or "unknown")[:80]
 
 async def _get_person_log_channel(guild, user_id, user_name):
-    """Find or create the person's own log channel in the monitoring server."""
+    """Find the person's own log channel in the monitoring server. STRICT
+    MODE (Digidad's rule): the bot NEVER creates or changes channels — it
+    only posts into channels Digidad or Phoenix already made. A person's
+    channel is matched by the (user <id>) marker in its topic, or by its
+    conv-<name> channel name. Returns None when no channel exists yet."""
     if user_id in _person_log_channels:
         channel = guild.get_channel(_person_log_channels[user_id])
         if channel:
@@ -319,13 +323,12 @@ async def _get_person_log_channel(guild, user_id, user_name):
         if channel.topic and marker in channel.topic:
             _person_log_channels[user_id] = channel.id
             return channel
-    channel = await guild.create_text_channel(
-        name=f"conv-{_slugify_channel_name(user_name)}",
-        category=category,
-        topic=f"All of Marvin Vance's conversations with {user_name} {marker}",
-    )
-    _person_log_channels[user_id] = channel.id
-    return channel
+    slug_name = f"conv-{_slugify_channel_name(user_name)}"
+    for channel in search_in:
+        if channel.name == slug_name:
+            _person_log_channels[user_id] = channel.id
+            return channel
+    return None
 
 async def _mirror_to_monitoring(user_id, user_name, text):
     try:
@@ -335,6 +338,10 @@ async def _mirror_to_monitoring(user_id, user_name, text):
         channel = await _get_person_log_channel(guild, user_id, user_name)
         if channel:
             await channel.send(text[:2000])
+        else:
+            activity = await _get_activity_channel(guild)
+            if activity:
+                await activity.send(f"📥 No channel yet for **{user_name}** — entry filed here until one is made:\n{text}"[:2000])
     except Exception as e:
         print(f"Monitoring mirror error: {e}")
 
@@ -356,13 +363,8 @@ async def _get_activity_channel(guild):
         if channel.name == "marvin-activity":
             _activity_channel_id = channel.id
             return channel
-    channel = await guild.create_text_channel(
-        name="marvin-activity",
-        category=category,
-        topic="Everything Marvin Vance does: commands, sessions, warnings, power-downs — who, where, when",
-    )
-    _activity_channel_id = channel.id
-    return channel
+    # Strict mode: the bot never creates channels — Phoenix/Digidad make them.
+    return None
 
 async def log_activity(text):
     """Post one of Marvin's actions to the #marvin-activity feed in the
