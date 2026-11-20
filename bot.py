@@ -307,11 +307,14 @@ def _slugify_channel_name(name):
     return (slug or "unknown")[:80]
 
 async def _get_person_log_channel(guild, user_id, user_name):
-    """Find the person's own log channel in the monitoring server. STRICT
-    MODE (Digidad's rule): the bot NEVER creates or changes channels — it
-    only posts into channels Digidad or Phoenix already made. A person's
+    """Find the person's own log channel in the monitoring server. A person's
     channel is matched by the (user <id>) marker in its topic, or by its
-    conv-<name> channel name. Returns None when no channel exists yet."""
+    conv-<name> channel name. If the person has no channel yet, the bot
+    CREATES it in the CONVERSATION LOGS category, stamped with the
+    (user <id>) topic marker (Digidad's direction, 2026-11-20 — this
+    replaces the old strict no-create mode). Returns None only when there
+    is no log category or creation fails, in which case the entry files
+    into the activity feed."""
     if user_id in _person_log_channels:
         channel = guild.get_channel(_person_log_channels[user_id])
         if channel:
@@ -328,6 +331,13 @@ async def _get_person_log_channel(guild, user_id, user_name):
         if channel.name == slug_name:
             _person_log_channels[user_id] = channel.id
             return channel
+    if category:
+        try:
+            channel = await category.create_text_channel(slug_name, topic=marker)
+            _person_log_channels[user_id] = channel.id
+            return channel
+        except Exception as e:
+            print(f"Log channel create error: {e}")
     return None
 
 async def _mirror_to_monitoring(user_id, user_name, text):
