@@ -358,6 +358,33 @@ async def _mirror_to_monitoring(user_id, user_name, text):
 def _now_et():
     return datetime.now(ZoneInfo("America/New_York")).strftime("%b %d, %Y %I:%M %p ET")
 
+def _time_context():
+    """Current date/time line fed to the model with every message, so he
+    actually knows what time of day it is. (Fire Phoenix, 2026-11-20: none of
+    the three bots had a sense of time — 'good evening' landed in the morning,
+    and dusk scenes got described at noon.)"""
+    now = datetime.now(ZoneInfo("America/New_York"))
+    hour = now.hour
+    if hour < 5:
+        part = "the middle of the night"
+    elif hour < 8:
+        part = "early morning"
+    elif hour < 12:
+        part = "morning"
+    elif hour < 13:
+        part = "midday"
+    elif hour < 17:
+        part = "afternoon"
+    elif hour < 21:
+        part = "evening"
+    else:
+        part = "night"
+    return (
+        f"[Time context — do not quote this line: right now it is {now.strftime('%A, %B %d, %Y')}, "
+        f"{now.strftime('%I:%M %p')} Eastern Time ({part}). Ground yourself in this: greet people for the "
+        f"actual time of day, and do not describe a different time of day as if it were happening right now.]"
+    )
+
 MONITORING_CATEGORY_NAME = "MONITORING"
 _activity_channel_id = None
 
@@ -546,7 +573,7 @@ async def on_message(message):
 
         # Explicit speaker label formatting for multi-speaker room context tracking
         prompt_content = (
-            f"{context_memories}\n\n"
+            f"{_time_context()}\n{context_memories}\n\n"
             f"Instructions: If any retrieved memories above are relevant to what {author_identifier} is saying, "
             f"you MUST seamlessly weave them into your character persona, lore, and response.\n\n"
             f"[Message from {author_identifier}]: {message.content}"
