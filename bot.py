@@ -2455,6 +2455,105 @@ async def web_auth_admin_approve(request):
         {"ok": True, "message": f"Done — @{target_username} is approved and can chat and post now.{note}"},
         headers=_web_chat_cors_headers())
 
+# ---------- Contact Fire Phoenix ----------
+# Fire Phoenix's direction (2026-11-25): members need a way to contact
+# him when they need him. A logged-in member sends from the Account page;
+# the message is stored for his owner inbox AND DM'd straight to his
+# Discord by Marvin, so it reaches him where he actually is.
+
+CONTACT_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS web_contact_messages (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES web_users(id) ON DELETE SET NULL,
+    author_name TEXT NOT NULL,
+    discord_identity TEXT,
+    content TEXT NOT NULL,
+    handled BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+_contact_last = {}
+
+async def web_contact_send(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not await _ensure_web_tables():
+        return _web_error("The site is still warming up — try again in a minute.", 503)
+    content = str(data.get("content") or "").strip()[:1000]
+    if not content:
+        return _web_error("Write your message first.", 400)
+    now = time.time()
+    if now - _contact_last.get(user["id"], 0) < 60:
+        return _web_error("Give it a minute between messages to Fire Phoenix.", 429)
+    _contact_last[user["id"]] = now
+    async with DB_POOL.acquire() as conn:
+        await conn.execute(CONTACT_TABLE_SQL)
+        row = await conn.fetchrow(
+            """INSERT INTO web_contact_messages (user_id, author_name, discord_identity, content)
+               VALUES ($1, $2, $3, $4) RETURNING id;""",
+            user["id"], user["display_name"], user.get("discord_identity"), content)
+    who = user["display_name"] + f" (@{user['username']})"
+    if user.get("verified_identity"):
+        who += f" — verified as {user['verified_identity']}"
+    elif user.get("discord_identity"):
+        who += f" — {user['discord_identity']} on Discord"
+    if not user.get("approved", True) and not user["is_owner"]:
+        who += " — (account still waiting for approval)"
+    try:
+        discord_user = bot.get_user(FIRE_PHOENIX_DISCORD_ID) or await bot.fetch_user(FIRE_PHOENIX_DISCORD_ID)
+        await discord_user.send(
+            f"📬 **Website contact** from {who}:\n\n{content}\n\n"
+            f"_(Sent from the Fire Phoenix Productions site. It's also saved in your owner tools on the Account page.)_")
+    except Exception as e:
+        print(f"Web contact DM error: {e}")
+    return aiohttp_web.json_response(
+        {"ok": True, "id": row["id"], "message": "Sent — your message went straight to Fire Phoenix's Discord, and it's saved for him on the site too."},
+        headers=_web_chat_cors_headers())
+
+async def web_admin_contacts(request):
+    user = await _web_auth_user(request)
+    if not user:
+        return _web_error("Log in first.", 401)
+    if not user["is_owner"]:
+        return _web_error("Only Fire Phoenix can read these.", 403)
+    if not await _ensure_web_tables():
+        return _web_error("The site is still warming up — try again in a minute.", 503)
+    async with DB_POOL.acquire() as conn:
+        await conn.execute(CONTACT_TABLE_SQL)
+        rows = await conn.fetch(
+            "SELECT * FROM web_contact_messages ORDER BY handled ASC, id DESC LIMIT 50;")
+    return aiohttp_web.json_response({"messages": [{
+        "id": r["id"], "author": r["author_name"], "discord_identity": r["discord_identity"],
+        "content": r["content"], "handled": bool(r["handled"]),
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+    } for r in rows]}, headers=_web_chat_cors_headers())
+
+async def web_admin_contacts_handled(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not user["is_owner"]:
+        return aiohttp_web.json_response({"error": "Only Fire Phoenix can do that."}, status=403, headers=_web_chat_cors_headers())
+    try:
+        mid = int(data.get("id") or 0)
+    except Exception:
+        mid = 0
+    if not mid:
+        return _web_error("Which message?", 400)
+    async with DB_POOL.acquire() as conn:
+        await conn.execute(CONTACT_TABLE_SQL)
+        await conn.execute("UPDATE web_contact_messages SET handled = TRUE WHERE id = $1;", mid)
+    return aiohttp_web.json_response({"ok": True, "message": "Marked as handled."}, headers=_web_chat_cors_headers())
+
 # ---------- community board endpoints ----------
 
 async def web_board_list(request):
@@ -3047,6 +3146,12 @@ def build_web_chat_app():
     app.router.add_post("/forum/topics", web_forum_new_topic)
     app.router.add_post("/forum/reply", web_forum_reply)
     app.router.add_options("/forum/reply", web_chat_options)
+    app.router.add_post("/contact", web_contact_send)
+    app.router.add_options("/contact", web_chat_options)
+    app.router.add_get("/auth/admin/contacts", web_admin_contacts)
+    app.router.add_options("/auth/admin/contacts", web_chat_options)
+    app.router.add_post("/auth/admin/contacts/handled", web_admin_contacts_handled)
+    app.router.add_options("/auth/admin/contacts/handled", web_chat_options)
     return app
 
 # ---------------------------------------------------------
