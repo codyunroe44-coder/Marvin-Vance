@@ -1525,6 +1525,7 @@ WEB_CHAT_BASE_RULES = """
 
 WEB CHAT CONTEXT:
 - You are chatting on the public Fire Phoenix Productions website. People make free accounts there, and you only talk with account holders.
+- This chat is a PUBLIC room: every message here, yours included, can be read by anyone who visits the website — and Fire Phoenix keeps an eye on the room. Talk like you are on a friendly public stage, and never say anything here that should stay private. Recent room messages from other members may be included with a message so you can follow the room.
 - Keep replies friendly and fairly short — a few sentences, like a quick chat, not a long essay.
 - Never share private real-life information about Fire Phoenix or anyone else with website members: no real names beyond the artist names, no school, no town, no accounts, no schedules, no family details. If a member asks for private information, politely decline and steer back to the music.
 - You cannot generate images, videos, or songs from the website, and you cannot post, send, buy, or change anything from here. If someone asks for something like that, tell them those live on Discord and at the Listening Place.
@@ -1678,7 +1679,20 @@ async def web_chat_reply(request):
             role_label = f"{user['verified_identity']} (VERIFIED family account; website account {user['display_name']} / @{user['username']})"
         else:
             role_label = f"{user['display_name']} (@{user['username']}), a website community member"
-        prompt = f"{history_block}[Message from {role_label}]: {message_text}"
+        room_block = ""
+        try:
+            recent = await _web_public_recent(limit=10)
+            recent = [m for m in recent if m["username"] != user["username"]]
+            if recent:
+                lines = []
+                for m in recent:
+                    who = "Marvin Vance" if m["role"] == "marvin" else m["author"]
+                    lines.append(f"{who}: {m['content']}")
+                room_block = ("[Recent messages in this public chat room from other people — "
+                              "everyone can see this conversation:]\n" + "\n".join(lines) + "\n\n")
+        except Exception as e:
+            print(f"Web chat room context error: {e}")
+        prompt = f"{history_block}{room_block}[Message from {role_label}]: {message_text}"
         try:
             response = await asyncio.to_thread(session["chat"].send_message, prompt)
             reply_text = (response.text or "").strip() if response else ""
@@ -1899,6 +1913,36 @@ async def _web_chat_history(user_id, limit=16):
                ) recent ORDER BY id ASC;""",
             user_id, limit)
     return [dict(r) for r in rows]
+
+async def _web_public_recent(limit=16):
+    """Recent messages in the public chat room, oldest first — the chat
+    with Marvin is public by Fire Phoenix's direction, so anyone can
+    read along and he can keep an eye on things."""
+    if not await _ensure_web_tables():
+        return []
+    async with DB_POOL.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT u.username, u.display_name, u.is_owner, u.verified_identity, m.role, m.content, m.created_at
+               FROM web_chat_messages m JOIN web_users u ON u.id = m.user_id
+               ORDER BY m.id DESC LIMIT $1;""",
+            limit)
+    out = []
+    for r in reversed(rows):
+        out.append({
+            "author": r["display_name"], "username": r["username"],
+            "is_owner": bool(r["is_owner"]), "verified_identity": r["verified_identity"],
+            "role": r["role"], "content": r["content"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        })
+    return out
+
+async def web_chat_public(request):
+    try:
+        limit = max(1, min(120, int(request.query.get("limit", "60"))))
+    except Exception:
+        limit = 60
+    messages = await _web_public_recent(limit=limit)
+    return aiohttp_web.json_response({"messages": messages}, headers=_web_chat_cors_headers())
 
 async def _web_chat_store(user_id, user_text, reply_text):
     if not await _ensure_web_tables():
@@ -2362,6 +2406,8 @@ def build_web_chat_app():
     app.router.add_options("/chat", web_chat_options)
     app.router.add_get("/chat/history", web_chat_history)
     app.router.add_options("/chat/history", web_chat_options)
+    app.router.add_get("/chat/public", web_chat_public)
+    app.router.add_options("/chat/public", web_chat_options)
     app.router.add_post("/auth/register", web_auth_register)
     app.router.add_options("/auth/register", web_chat_options)
     app.router.add_post("/auth/login", web_auth_login)
