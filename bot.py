@@ -497,6 +497,86 @@ async def post_phoenix_request(request_text, requester_name, where, original_mes
     except Exception as e:
         print(f"Phoenix request error: {e}")
 
+# ---------------------------------------------------------
+# PHOENIX DELIVERIES — the report-back (Fire Phoenix, 2026-11-24)
+# Filing a request records where it came from. When Phoenix's answer
+# arrives in the Phoenix DM (first line = the delivery marker), Marvin
+# carries his reaction back to that original conversation himself and
+# reports to the person who asked, in that room, in his own voice.
+# The marker may carry origin_user_id / origin_name for hand-carried
+# deliveries (e.g. a bot restart wiped the pending store).
+# ---------------------------------------------------------
+PHOENIX_USER_ID = 1570638221128376463  # Phoenix Flash (phoenixflash.)
+PHOENIX_DELIVERY_MARKER = "[PHOENIX_DELIVERY"
+_pending_phoenix_requests = {}  # session_key -> list of origin dicts
+
+async def handle_phoenix_delivery(delivery_message):
+    """Carry Marvin's reaction to Phoenix's findings back to the
+    conversation the request came from. Best-effort: a failed
+    report-back never breaks his normal reply to Phoenix."""
+    content = delivery_message.content
+    first_line, _, body = content.partition("\n")
+    delivery_text = body.strip() or content
+    m_user = re.search(r"origin_user_id=(\d+)", first_line)
+    m_name = re.search(r"origin_name=([^\]]+)", first_line)
+    origin_user_id = int(m_user.group(1)) if m_user else None
+
+    origin = None
+    if origin_user_id is not None and _pending_phoenix_requests.get(origin_user_id):
+        origin = _pending_phoenix_requests[origin_user_id].pop(0)
+        if not _pending_phoenix_requests[origin_user_id]:
+            del _pending_phoenix_requests[origin_user_id]
+    if origin is None:
+        for key in list(_pending_phoenix_requests.keys()):
+            queue = _pending_phoenix_requests[key]
+            if queue:
+                origin = queue.pop(0)
+                if not queue:
+                    del _pending_phoenix_requests[key]
+                break
+
+    target_channel = None
+    session_key = None
+    requester = None
+    if origin is not None:
+        session_key = origin["session_key"]
+        requester = origin["requester"]
+        target_channel = bot.get_channel(origin["channel_id"])
+        if target_channel is None and origin.get("user_id"):
+            user = bot.get_user(origin["user_id"]) or await bot.fetch_user(origin["user_id"])
+            if user is not None:
+                target_channel = await user.create_dm()
+    elif origin_user_id is not None:
+        user = bot.get_user(origin_user_id) or await bot.fetch_user(origin_user_id)
+        if user is None:
+            return
+        target_channel = await user.create_dm()
+        session_key = origin_user_id
+        requester = (m_name.group(1).strip() if m_name else None) or USER_IDENTITY_OVERRIDES.get(origin_user_id, user.display_name)
+    if target_channel is None or session_key is None:
+        return
+
+    if session_key not in chat_sessions:
+        chat_sessions[session_key] = ai_client.chats.create(
+            model='gemini-3.6-flash',
+            config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION))
+    chat = chat_sessions[session_key]
+    prompt = (
+        f"{_time_context()}\n\n"
+        f"[Phoenix — your second brain — just brought back what you asked for. "
+        f"{requester} is the one who originally asked you. Here is what Phoenix found:]\n\n"
+        f"{delivery_text}\n\n"
+        f"Instructions: Tell {requester} what Phoenix found and how it hits you, in your own voice, "
+        f"sharing the actual details like you looked it up yourself with Phoenix's help."
+    )
+    response = chat.send_message(prompt)
+    if response and response.text:
+        chunks = [response.text[i:i + 1900] for i in range(0, len(response.text), 1900)]
+        async with target_channel.typing():
+            for chunk in chunks:
+                await target_channel.send(chunk)
+        await log_activity(f"🧠 Marvin reported back to {requester} with Phoenix's findings · {_now_et()}")
+
 async def log_activity_event(message, is_dm):
     """Record a command Marvin carried out (kind='activity') and post it to
     the activity feed: who ran it, where, and the full text."""
@@ -626,6 +706,14 @@ async def on_message(message):
 
     session_key = message.author.id if is_dm else channel_id
 
+    # Phoenix delivery: Phoenix is bringing back an answer in the DM —
+    # carry Marvin's reaction back to the conversation that asked.
+    if is_dm and message.author.id == PHOENIX_USER_ID and message.content.startswith(PHOENIX_DELIVERY_MARKER):
+        try:
+            await handle_phoenix_delivery(message)
+        except Exception as e:
+            print(f"Phoenix delivery error: {e}")
+
     try:
         context_memories = ""
         if DB_POOL:
@@ -679,6 +767,12 @@ async def on_message(message):
                 for req in re.findall(r"\[PHOENIX_REQUEST:\s*(.*?)\]", reply_text, flags=re.DOTALL):
                     where = "DM" if is_dm else f"#{message.channel.name}"
                     await post_phoenix_request(req.strip(), author_identifier, where, message.content)
+                    _pending_phoenix_requests.setdefault(session_key, []).append({
+                        "channel_id": message.channel.id,
+                        "user_id": message.author.id,
+                        "session_key": session_key,
+                        "requester": author_identifier,
+                    })
                 reply_text = re.sub(r"\s*\[PHOENIX_REQUEST:.*?\]", "", reply_text, flags=re.DOTALL).strip()
                 if not reply_text:
                     reply_text = "On it — give me a minute! 🔥"
