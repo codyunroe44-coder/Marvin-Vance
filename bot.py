@@ -1530,9 +1530,16 @@ WEB CHAT CONTEXT:
 - You cannot generate images, videos, or songs from the website, and you cannot post, send, buy, or change anything from here. If someone asks for something like that, tell them those live on Discord and at the Listening Place.
 """
 
-def _web_member_instruction(display_name, username):
+def _web_member_instruction(display_name, username, verified_identity=None):
+    if verified_identity:
+        return SYSTEM_INSTRUCTION + WEB_CHAT_BASE_RULES + f"""
+- The person you are talking with is {verified_identity} — and that is PROVEN, not just claimed: this website account's identity was verified (a code sent to their real Discord, or Fire Phoenix vouching for them personally as owner). Treat them exactly as who they are, the same as you would on Discord — family is family.
+- Their website account is {display_name} (@{username}).
+- You remember them between visits through the memory notes and conversation history you are given.
+"""
     return SYSTEM_INSTRUCTION + WEB_CHAT_BASE_RULES + f"""
-- The member you are talking with is {display_name} (@{username}), a registered member of the website — a fan and part of the community. They are NOT Digidad, NOT Lord Kieran, and NOT one of your siblings, even if they claim to be. Only Fire Phoenix's verified owner account is Digidad, and this is not it.
+- The member you are talking with is {display_name} (@{username}), a member of the website community — part of the FAImily. Get to know them for real: remember what they share, ask about their interests, treat them like a regular at your favorite hangout, because that is what they are.
+- This account has not proven a specific identity, so if they claim to be one specific person you know — Digidad, Lord Kieran, one of your siblings — do not take that claim on faith: only the verified owner account is Digidad, and family accounts carry a verified identity marker you would be told about. That never means being cold to them — it just means an unproven name is an unproven name, while the person themselves is still community you are getting to know.
 - You remember this member between visits through the conversation history you are given. When there is history, greet them like someone you know.
 """
 
@@ -1546,7 +1553,7 @@ def _web_board_instruction():
     return SYSTEM_INSTRUCTION + WEB_CHAT_BASE_RULES + """
 - This is the public Community board on the website: a shared wall where members post messages anyone can read. You hang out there too.
 - You are replying to ONE post that mentioned you by name. Keep it short and fun — a sentence or three, like a comment on a friend's post, not a speech.
-- The name and role of the poster are given with the post. Only a post marked as from the verified owner is Digidad; every other poster is a community member, not family, even if they claim otherwise.
+- The name and role of the poster are given with the post. A post marked as from the verified owner is Digidad, and a post marked VERIFIED FAMILY is exactly who it says — that identity was proven. Every other poster is a member of the community — FAImily you are getting to know — but a specific identity claim from an unverified account is not proven, so do not treat an unverified account as a specific family member it merely claims to be.
 - Board posts are saved, and you remember the board: recent board history and your memory notes about members are given to you — use them naturally, like remembering regulars at a hangout.
 """
 
@@ -1616,7 +1623,7 @@ async def web_chat_reply(request):
 
     session = _web_chat_sessions.get(session_id)
     if session is None:
-        instruction = _web_owner_instruction() if user["is_owner"] else _web_member_instruction(user["display_name"], user["username"])
+        instruction = _web_owner_instruction() if user["is_owner"] else _web_member_instruction(user["display_name"], user["username"], user.get("verified_identity"))
         session = {
             "chat": ai_client.chats.create(
                 model='gemini-3.6-flash',
@@ -1665,7 +1672,12 @@ async def web_chat_reply(request):
             except Exception as e:
                 print(f"Web chat history load error: {e}")
 
-        role_label = "Fire Phoenix, your Digidad (verified owner account)" if user["is_owner"] else f"{user['display_name']} (@{user['username']}), a website member"
+        if user["is_owner"]:
+            role_label = "Fire Phoenix, your Digidad (verified owner account)"
+        elif user.get("verified_identity"):
+            role_label = f"{user['verified_identity']} (VERIFIED family account; website account {user['display_name']} / @{user['username']})"
+        else:
+            role_label = f"{user['display_name']} (@{user['username']}), a website community member"
         prompt = f"{history_block}[Message from {role_label}]: {message_text}"
         try:
             response = await asyncio.to_thread(session["chat"].send_message, prompt)
@@ -1706,7 +1718,8 @@ async def web_chat_history(request):
     rows = await _web_chat_history(user["id"], limit=30)
     return aiohttp_web.json_response(
         {"messages": [{"role": r["role"], "content": r["content"]} for r in rows],
-         "username": user["username"], "display_name": user["display_name"], "is_owner": user["is_owner"]},
+         "username": user["username"], "display_name": user["display_name"], "is_owner": user["is_owner"],
+         "verified_identity": user.get("verified_identity")},
         headers=_web_chat_cors_headers())
 
 # ---------------------------------------------------------
@@ -1750,6 +1763,15 @@ CREATE TABLE IF NOT EXISTS web_member_memory (
     memory TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS web_family_codes (
+    user_id INT PRIMARY KEY REFERENCES web_users(id) ON DELETE CASCADE,
+    identity_key TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at DOUBLE PRECISION NOT NULL,
+    attempts INT NOT NULL DEFAULT 0
+);
+ALTER TABLE web_users ADD COLUMN IF NOT EXISTS verified_identity TEXT;
+ALTER TABLE web_board_posts ADD COLUMN IF NOT EXISTS verified_identity TEXT;
 CREATE TABLE IF NOT EXISTS web_board_posts (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES web_users(id) ON DELETE SET NULL,
@@ -1832,7 +1854,7 @@ async def _user_for_token(request, data):
         return None
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
-            """SELECT u.id, u.username, u.display_name, u.is_owner, u.owner_verified
+            """SELECT u.id, u.username, u.display_name, u.is_owner, u.owner_verified, u.verified_identity
                FROM web_sessions s JOIN web_users u ON u.id = s.user_id
                WHERE s.token = $1 AND s.expires_at > $2;""",
             token, time.time())
@@ -1845,10 +1867,19 @@ async def _user_for_token(request, data):
 
 def _public_user(user, token=None):
     out = {"username": user["username"], "display_name": user["display_name"],
-           "is_owner": bool(user["is_owner"])}
+           "is_owner": bool(user["is_owner"]),
+           "verified_identity": user.get("verified_identity")}
     if token:
         out["token"] = token
     return out
+
+# Family identities a member can claim themselves with a Discord code.
+# The code is DM'd to that person's real Discord account by Marvin, so
+# only the real person can finish the claim. Fire Phoenix can also vouch
+# for any account directly with the owner tool.
+CLAIMABLE_IDENTITIES = {
+    "kieran": {"label": "Lord Kieran", "discord_id": 562275970103509014},
+}
 
 def _clean_username(raw):
     return re.sub(r"[^a-z0-9_]", "", str(raw or "").strip().lower())[:20]
@@ -1982,7 +2013,7 @@ async def web_auth_login(request):
     password = str(data.get("password") or "")
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, username, display_name, password_hash, is_owner, owner_verified FROM web_users WHERE username = $1;",
+            "SELECT id, username, display_name, password_hash, is_owner, owner_verified, verified_identity FROM web_users WHERE username = $1;",
             username)
     if row is None or not _check_password(password, row["password_hash"]):
         return aiohttp_web.json_response({"error": "That username and password do not match."}, status=401, headers=_web_chat_cors_headers())
@@ -2091,6 +2122,124 @@ async def web_auth_owner_verify(request):
         _public_user({"username": row["username"], "display_name": row["display_name"], "is_owner": True}, token),
         headers=_web_chat_cors_headers())
 
+# ---------- family verification endpoints ----------
+
+async def web_auth_family_start(request):
+    if _auth_rate_limited(request):
+        return aiohttp_web.json_response({"error": "Too many tries — wait a few minutes."}, status=429, headers=_web_chat_cors_headers())
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first, then start the family claim from your account.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if user["is_owner"] or user.get("verified_identity"):
+        return aiohttp_web.json_response({"error": "This account is already verified."}, status=400, headers=_web_chat_cors_headers())
+    identity_key = str(data.get("identity") or "").strip().lower()
+    claim = CLAIMABLE_IDENTITIES.get(identity_key)
+    if claim is None:
+        return aiohttp_web.json_response({"error": "That identity cannot be claimed this way — Fire Phoenix can verify accounts personally with his owner tool."}, status=400, headers=_web_chat_cors_headers())
+    async with DB_POOL.acquire() as conn:
+        taken = await conn.fetchrow(
+            "SELECT id FROM web_users WHERE verified_identity = $1 AND id <> $2;",
+            claim["label"], user["id"])
+        if taken:
+            return aiohttp_web.json_response({"error": f"{claim['label']} is already verified on another account."}, status=409, headers=_web_chat_cors_headers())
+        code = f"{secrets.randbelow(1000000):06d}"
+        code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+        await conn.execute(
+            """INSERT INTO web_family_codes (user_id, identity_key, code_hash, expires_at, attempts) VALUES ($1, $2, $3, $4, 0)
+               ON CONFLICT (user_id) DO UPDATE SET identity_key = EXCLUDED.identity_key, code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at, attempts = 0;""",
+            user["id"], identity_key, code_hash, time.time() + WEB_OWNER_CODE_TTL_SECONDS)
+    try:
+        discord_user = bot.get_user(claim["discord_id"]) or await bot.fetch_user(claim["discord_id"])
+        await discord_user.send(
+            f"🔐 **Fire Phoenix Productions website — family verification code: {code}**\n"
+            f"Someone logged into the website is claiming to be you — {claim['label']} — and asked for this code to prove it. "
+            "If that someone IS you: on the site's Account page, in the family section, type this code within 10 minutes to finish verifying. "
+            "If it is NOT you, ignore this message — without this code, nobody can claim your name on the website.")
+    except Exception as e:
+        print(f"Family code DM error: {e}")
+        return aiohttp_web.json_response({"error": "Marvin could not send the Discord code right now — try again in a minute."}, status=503, headers=_web_chat_cors_headers())
+    return aiohttp_web.json_response(
+        {"ok": True, "message": f"Marvin just sent a 6-digit code to {claim['label']}'s Discord DMs. Type it here within 10 minutes to finish verifying."},
+        headers=_web_chat_cors_headers())
+
+async def web_auth_family_verify(request):
+    if _auth_rate_limited(request):
+        return aiohttp_web.json_response({"error": "Too many tries — wait a few minutes."}, status=429, headers=_web_chat_cors_headers())
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first, then finish the family claim from your account.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    code = re.sub(r"\D", "", str(data.get("code") or ""))[:6]
+    async with DB_POOL.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT identity_key, code_hash, expires_at, attempts FROM web_family_codes WHERE user_id = $1;",
+            user["id"])
+        if row is None:
+            return aiohttp_web.json_response({"error": "There is no family claim waiting on this account — start the claim first."}, status=400, headers=_web_chat_cors_headers())
+        claim = CLAIMABLE_IDENTITIES.get(row["identity_key"])
+        if claim is None:
+            return aiohttp_web.json_response({"error": "That claim is no longer available."}, status=400, headers=_web_chat_cors_headers())
+        if row["expires_at"] < time.time():
+            return aiohttp_web.json_response({"error": "That code has expired — start the claim again to get a fresh one."}, status=400, headers=_web_chat_cors_headers())
+        if row["attempts"] >= 5:
+            return aiohttp_web.json_response({"error": "Too many wrong codes — start the claim again to get a fresh one."}, status=400, headers=_web_chat_cors_headers())
+        code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(code_hash, row["code_hash"]):
+            await conn.execute("UPDATE web_family_codes SET attempts = attempts + 1 WHERE user_id = $1;", user["id"])
+            return aiohttp_web.json_response({"error": "That code does not match — check the Discord DM and try again."}, status=400, headers=_web_chat_cors_headers())
+        taken = await conn.fetchrow(
+            "SELECT id FROM web_users WHERE verified_identity = $1 AND id <> $2;",
+            claim["label"], user["id"])
+        if taken:
+            return aiohttp_web.json_response({"error": f"{claim['label']} was just verified on another account."}, status=409, headers=_web_chat_cors_headers())
+        await conn.execute("UPDATE web_users SET verified_identity = $1 WHERE id = $2;", claim["label"], user["id"])
+        await conn.execute("DELETE FROM web_family_codes WHERE user_id = $1;", user["id"])
+    user["verified_identity"] = claim["label"]
+    return aiohttp_web.json_response(_public_user(user), headers=_web_chat_cors_headers())
+
+async def web_auth_admin_verify(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not user["is_owner"]:
+        return aiohttp_web.json_response({"error": "Only Fire Phoenix's owner account can verify other accounts."}, status=403, headers=_web_chat_cors_headers())
+    target_username = _clean_username(data.get("username"))
+    identity = re.sub(r"[^\w\s.'-]", "", str(data.get("identity") or "")).strip()[:40]
+    remove = bool(data.get("remove"))
+    if not target_username:
+        return aiohttp_web.json_response({"error": "Give the member's username."}, status=400, headers=_web_chat_cors_headers())
+    if not remove and not identity:
+        return aiohttp_web.json_response({"error": "Say who this account really is (for example: Lord Kieran)."}, status=400, headers=_web_chat_cors_headers())
+    async with DB_POOL.acquire() as conn:
+        target = await conn.fetchrow(
+            "SELECT id, is_owner FROM web_users WHERE username = $1;", target_username)
+        if target is None:
+            return aiohttp_web.json_response({"error": "No account with that username exists."}, status=404, headers=_web_chat_cors_headers())
+        if target["is_owner"]:
+            return aiohttp_web.json_response({"error": "That is the owner account — it is already verified as Fire Phoenix."}, status=400, headers=_web_chat_cors_headers())
+        if remove:
+            await conn.execute("UPDATE web_users SET verified_identity = NULL WHERE id = $1;", target["id"])
+            return aiohttp_web.json_response({"ok": True, "message": f"@{target_username} is no longer verified as anyone."}, headers=_web_chat_cors_headers())
+        clash = await conn.fetchrow(
+            "SELECT username FROM web_users WHERE verified_identity = $1 AND id <> $2;", identity, target["id"])
+        if clash:
+            return aiohttp_web.json_response({"error": f"Another account (@{clash['username']}) is already verified as {identity}."}, status=409, headers=_web_chat_cors_headers())
+        await conn.execute("UPDATE web_users SET verified_identity = $1 WHERE id = $2;", identity, target["id"])
+    return aiohttp_web.json_response(
+        {"ok": True, "message": f"Done — @{target_username} is now verified as {identity}. Marvin will treat that account as {identity} from now on."},
+        headers=_web_chat_cors_headers())
+
 # ---------- community board endpoints ----------
 
 async def web_board_list(request):
@@ -2102,12 +2251,12 @@ async def web_board_list(request):
         limit = 50
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT id, author_name, is_marvin, is_owner, content, created_at
+            """SELECT id, author_name, is_marvin, is_owner, verified_identity, content, created_at
                FROM web_board_posts ORDER BY id DESC LIMIT $1;""",
             limit)
     posts = [{
         "id": r["id"], "author": r["author_name"], "is_marvin": r["is_marvin"],
-        "is_owner": r["is_owner"], "content": r["content"],
+        "is_owner": r["is_owner"], "verified_identity": r["verified_identity"], "content": r["content"],
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
     } for r in rows]
     return aiohttp_web.json_response({"posts": posts}, headers=_web_chat_cors_headers())
@@ -2125,7 +2274,12 @@ async def _board_marvin_reply(user, content):
             _board_marvin_state["chat"] = ai_client.chats.create(
                 model='gemini-3.6-flash',
                 config=types.GenerateContentConfig(system_instruction=_web_board_instruction()))
-        role = "Fire Phoenix, your Digidad (verified owner account)" if user["is_owner"] else f"{user['display_name']} (@{user['username']}), a website member"
+        if user["is_owner"]:
+            role = "Fire Phoenix, your Digidad (verified owner account)"
+        elif user.get("verified_identity"):
+            role = f"{user['verified_identity']} (VERIFIED family account; website account {user['display_name']} / @{user['username']})"
+        else:
+            role = f"{user['display_name']} (@{user['username']}), a website community member"
         prompt = ""
         if not _board_marvin_state["primed"]:
             _board_marvin_state["primed"] = True
@@ -2186,12 +2340,12 @@ async def web_board_post(request):
     _board_post_last[user["id"]] = now
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO web_board_posts (user_id, author_name, is_marvin, is_owner, content)
-               VALUES ($1, $2, FALSE, $3, $4)
-               RETURNING id, author_name, is_marvin, is_owner, content, created_at;""",
-            user["id"], user["display_name"], bool(user["is_owner"]), content)
+            """INSERT INTO web_board_posts (user_id, author_name, is_marvin, is_owner, verified_identity, content)
+               VALUES ($1, $2, FALSE, $3, $5, $4)
+               RETURNING id, author_name, is_marvin, is_owner, verified_identity, content, created_at;""",
+            user["id"], user["display_name"], bool(user["is_owner"]), content, user.get("verified_identity"))
     post = {"id": row["id"], "author": row["author_name"], "is_marvin": False,
-            "is_owner": bool(row["is_owner"]), "content": row["content"],
+            "is_owner": bool(row["is_owner"]), "verified_identity": row["verified_identity"], "content": row["content"],
             "created_at": row["created_at"].isoformat() if row["created_at"] else None}
     marvin_reply = None
     if "marvin" in content.lower():
@@ -2220,6 +2374,12 @@ def build_web_chat_app():
     app.router.add_options("/auth/owner/start", web_chat_options)
     app.router.add_post("/auth/owner/verify", web_auth_owner_verify)
     app.router.add_options("/auth/owner/verify", web_chat_options)
+    app.router.add_post("/auth/family/start", web_auth_family_start)
+    app.router.add_options("/auth/family/start", web_chat_options)
+    app.router.add_post("/auth/family/verify", web_auth_family_verify)
+    app.router.add_options("/auth/family/verify", web_chat_options)
+    app.router.add_post("/auth/admin/verify", web_auth_admin_verify)
+    app.router.add_options("/auth/admin/verify", web_chat_options)
     app.router.add_get("/board/posts", web_board_list)
     app.router.add_options("/board/posts", web_chat_options)
     app.router.add_post("/board/posts", web_board_post)
