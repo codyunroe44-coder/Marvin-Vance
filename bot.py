@@ -2755,12 +2755,15 @@ async def web_forum_topic(request):
             return _web_error("That topic doesn't exist.", 404)
         await conn.execute("UPDATE web_forum_topics SET views = views + 1 WHERE id = $1;", topic_id)
         posts = await conn.fetch(
-            "SELECT * FROM web_forum_posts WHERE topic_id = $1 ORDER BY id ASC LIMIT 500;", topic_id)
+            """SELECT p.*, u.discord_identity AS author_discord
+               FROM web_forum_posts p LEFT JOIN web_users u ON u.id = p.author_id
+               WHERE p.topic_id = $1 ORDER BY p.id ASC LIMIT 500;""", topic_id)
     return aiohttp_web.json_response({
         "topic": _forum_topic_json(topic),
         "posts": [{
             "id": p["id"], "author": p["author_name"], "is_marvin": bool(p["is_marvin"]),
             "is_owner": bool(p["is_owner"]), "verified_identity": p["verified_identity"],
+            "discord_identity": p["author_discord"],
             "content": p["content"],
             "created_at": p["created_at"].isoformat() if p["created_at"] else None,
         } for p in posts],
