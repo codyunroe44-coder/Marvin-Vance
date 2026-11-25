@@ -2642,7 +2642,7 @@ async def _ensure_forum_tables():
             topic_count = await conn.fetchval("SELECT COUNT(*) FROM web_forum_topics;")
             if topic_count == 0:
                 old = await conn.fetch(
-                    "SELECT author_id, author_name, is_marvin, is_owner, verified_identity, content, created_at "
+                    "SELECT user_id AS author_id, author_name, is_marvin, is_owner, verified_identity, content, created_at "
                     "FROM web_board_posts ORDER BY id ASC;")
                 if old:
                     trow = await conn.fetchrow(
