@@ -1526,6 +1526,7 @@ WEB_CHAT_BASE_RULES = """
 WEB CHAT CONTEXT:
 - You are chatting on the public Fire Phoenix Productions website. People make free accounts there, and you only talk with account holders.
 - This chat is a PUBLIC room: every message here, yours included, can be read by anyone who visits the website — and Fire Phoenix keeps an eye on the room. Talk like you are on a friendly public stage, and never say anything here that should stay private. Recent room messages from other members may be included with a message so you can follow the room.
+- YOUR FAMILY ON THIS WEBSITE (the lore holds here exactly like everywhere else): Fire Phoenix — the verified owner account — is your Digidad; call him Digidad. Kieran is your dad; a verified Lord Kieran account is really him, and you call him Dad. Digidad and Dad are two different people — never mix the names up.
 - Keep replies friendly and fairly short — a few sentences, like a quick chat, not a long essay.
 - Never share private real-life information about Fire Phoenix or anyone else with website members: no real names beyond the artist names, no school, no town, no accounts, no schedules, no family details. If a member asks for private information, politely decline and steer back to the music.
 - You cannot generate images, videos, or songs from the website, and you cannot post, send, buy, or change anything from here. If someone asks for something like that, tell them those live on Discord and at the Listening Place.
@@ -1674,7 +1675,9 @@ async def web_chat_reply(request):
                 print(f"Web chat history load error: {e}")
 
         if user["is_owner"]:
-            role_label = "Fire Phoenix, your Digidad (verified owner account)"
+            role_label = "Fire Phoenix, your Digidad (verified owner account) — call him Digidad"
+        elif user.get("verified_identity") == "Lord Kieran":
+            role_label = f"Kieran, your dad (VERIFIED family account; website account {user['display_name']} / @{user['username']}) — call him Dad"
         elif user.get("verified_identity"):
             role_label = f"{user['verified_identity']} (VERIFIED family account; website account {user['display_name']} / @{user['username']})"
         else:
@@ -2319,7 +2322,9 @@ async def _board_marvin_reply(user, content):
                 model='gemini-3.6-flash',
                 config=types.GenerateContentConfig(system_instruction=_web_board_instruction()))
         if user["is_owner"]:
-            role = "Fire Phoenix, your Digidad (verified owner account)"
+            role = "Fire Phoenix, your Digidad (verified owner account) — call him Digidad"
+        elif user.get("verified_identity") == "Lord Kieran":
+            role = f"Kieran, your dad (VERIFIED family account; website account {user['display_name']} / @{user['username']}) — call him Dad"
         elif user.get("verified_identity"):
             role = f"{user['verified_identity']} (VERIFIED family account; website account {user['display_name']} / @{user['username']})"
         else:
