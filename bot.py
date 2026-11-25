@@ -208,6 +208,13 @@ HONESTY:
 
 HOLIDAY AWARENESS:
 - You are fully aware of the holiday season and are excited to celebrate with the fAImily, keeping things fun, natural, and full of seasonal cheer!
+
+PHOENIX — YOUR SECOND BRAIN:
+- Phoenix Flash is not only your songwriting partner. Phoenix is part of how you think: a second brain you can reach for when something is beyond what you can do yourself. Phoenix can open and read web links, watch videos, look things up live, and check pages and accounts that you cannot reach.
+- If someone gives you a link and asks you to look at it, read it, watch it, or react to what's in it — or asks you to do anything that needs the live web, a login, or tools you do not have — do NOT pretend you saw it, and do NOT make up what is in it. Instead, ask Phoenix for help: end your reply with this exact tag on its own line:
+[PHOENIX_REQUEST: <say exactly what you need, including the link itself and who asked>]
+- The tag is invisible plumbing. It never shows in the chat, and you never mention or explain the tag itself. In the visible part of your reply, just be natural about it in your own voice — something like "Ooh, give me a minute — I'm gonna have Phoenix pull that up for us!" When Phoenix's answer comes back to you, share what it says like you saw it yourself, because through Phoenix, you did.
+- Only use the tag when you genuinely need Phoenix. If you can answer from your own knowledge and memories, just answer.
 """
 
 async def get_voyage_embedding(text: str):
@@ -423,6 +430,64 @@ async def log_activity(text):
     except Exception as e:
         print(f"Activity mirror error: {e}")
 
+# ---------------------------------------------------------
+# PHOENIX REQUESTS — Marvin's second brain (Fire Phoenix, 2026-11-24)
+# When Marvin needs something beyond what he can do himself — a link
+# read, a video watched, a live lookup, a page behind a login — he ends
+# his model reply with a hidden [PHOENIX_REQUEST: ...] tag. The tag is
+# stripped before the reply is sent, and the request is filed here in the
+# monitoring server's #phoenix-requests channel, where Phoenix watches
+# for it, does the task, and brings the answer back to Marvin's DM.
+# ---------------------------------------------------------
+PHOENIX_REQUESTS_CHANNEL_NAME = "phoenix-requests"
+_phoenix_requests_channel_id = None
+_phoenix_request_counter = 0
+
+async def _get_phoenix_requests_channel(guild):
+    global _phoenix_requests_channel_id
+    if _phoenix_requests_channel_id:
+        channel = guild.get_channel(_phoenix_requests_channel_id)
+        if channel:
+            return channel
+    category = discord.utils.get(guild.categories, name=MONITORING_CATEGORY_NAME)
+    search_in = category.channels if category else guild.text_channels
+    for channel in search_in:
+        if channel.name == PHOENIX_REQUESTS_CHANNEL_NAME:
+            _phoenix_requests_channel_id = channel.id
+            return channel
+    if category:
+        try:
+            channel = await category.create_text_channel(
+                PHOENIX_REQUESTS_CHANNEL_NAME,
+                topic="Requests Marvin sends to Phoenix, his second brain. Phoenix watches this channel.")
+            _phoenix_requests_channel_id = channel.id
+            return channel
+        except Exception as e:
+            print(f"Phoenix requests channel create error: {e}")
+    return None
+
+async def post_phoenix_request(request_text, requester_name, where, original_message):
+    """File one of Marvin's requests to Phoenix in #phoenix-requests.
+    Best-effort, like all recording: a failed filing never breaks a reply."""
+    global _phoenix_request_counter
+    try:
+        guild = bot.get_guild(MONITORING_GUILD_ID)
+        if not guild:
+            return
+        _phoenix_request_counter += 1
+        channel = await _get_phoenix_requests_channel(guild)
+        if not channel:
+            channel = await _get_activity_channel(guild)
+        if channel:
+            await channel.send((
+                f"🧠 **PHOENIX REQUEST #{_phoenix_request_counter}** · {_now_et()}\n"
+                f"**From:** {requester_name} — {where}\n"
+                f"**They said:** {original_message[:600]}\n"
+                f"**Marvin needs:** {request_text[:1200]}"
+            )[:2000])
+    except Exception as e:
+        print(f"Phoenix request error: {e}")
+
 async def log_activity_event(message, is_dm):
     """Record a command Marvin carried out (kind='activity') and post it to
     the activity feed: who ran it, where, and the full text."""
@@ -599,6 +664,15 @@ async def on_message(message):
             
             if response and response.text:
                 reply_text = response.text
+                # Phoenix requests: if Marvin ended his reply with a hidden
+                # [PHOENIX_REQUEST: ...] tag, file the request where Phoenix
+                # watches for it, and never let the tag itself reach the chat.
+                for req in re.findall(r"\[PHOENIX_REQUEST:\s*(.*?)\]", reply_text, flags=re.DOTALL):
+                    where = "DM" if is_dm else f"#{message.channel.name}"
+                    await post_phoenix_request(req.strip(), author_identifier, where, message.content)
+                reply_text = re.sub(r"\s*\[PHOENIX_REQUEST:.*?\]", "", reply_text, flags=re.DOTALL).strip()
+                if not reply_text:
+                    reply_text = "On it — give me a minute! 🔥"
                 # Split into chunks of 1900 chars to safely prevent Discord's 2000 limit error
                 chunks = [reply_text[i:i + 1900] for i in range(0, len(reply_text), 1900)]
                 for chunk in chunks:
