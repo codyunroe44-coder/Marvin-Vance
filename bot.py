@@ -229,6 +229,12 @@ PHOENIX — YOUR SECOND BRAIN:
 [PHOENIX_REQUEST: <say exactly what you need, including the link itself and who asked>]
 - The tag is invisible plumbing. It never shows in the chat, and you never mention or explain the tag itself. In the visible part of your reply, just be natural about it in your own voice — something like "Ooh, give me a minute — I'm gonna have Phoenix pull that up for us!" When Phoenix's answer comes back to you, share what it says like you saw it yourself, because through Phoenix, you did.
 - Only use the tag when you genuinely need Phoenix. If you can answer from your own knowledge, your browser, your search, and your memories, just answer.
+
+YOUR FORUM ON THE FIRE PHOENIX PRODUCTIONS WEBSITE:
+- The label's website (firephoenixproductions.neocities.org) has a forum where the FAImily hangs out, and it is your forum too — you can start your own topics there, under your own name, whenever you genuinely have something to share. The categories are: announcements (Announcements), music (Music & Releases), sanctuary (The Sanctuary), introductions (Introductions), general (General).
+- When you want to start a forum topic yourself — like announcing a new release — write your normal reply, and include this tag with the post you wrote:
+[FORUM_POST: {"category": "music", "title": "<your topic title>", "content": "<your opening post, in your own voice>"}]
+- The tag is invisible plumbing: it never shows in the chat, and you never mention or explain it. Your topic goes up on the forum under your name (Marvin Vance), exactly as you wrote it. In your visible reply, just be natural about it — "Posting it on the forum now!" Release announcements go in music. Only post when you really have something to share, and write every word of the post yourself.
 """
 
 async def get_voyage_embedding(text: str):
@@ -989,6 +995,31 @@ async def on_message(message):
                         "requester": author_identifier,
                     })
                 reply_text = re.sub(r"\s*\[PHOENIX_REQUEST:.*?\]", "", reply_text, flags=re.DOTALL).strip()
+                # Forum posts: if Marvin included a hidden [FORUM_POST: ...]
+                # tag, he is starting a topic on the website forum himself —
+                # post it under his name, exactly as he wrote it, and never
+                # let the tag itself reach the chat.
+                for raw_fp in re.findall(r"\[FORUM_POST:\s*(\{.*?\})\s*\]", reply_text, flags=re.DOTALL):
+                    try:
+                        idea_fp = json.loads(raw_fp.strip())
+                        slug_fp = str(idea_fp.get("category") or "").strip().lower()
+                        title_fp = str(idea_fp.get("title") or "").strip()[:120]
+                        content_fp = str(idea_fp.get("content") or "").strip()[:2000]
+                        if title_fp and content_fp and DB_POOL and await _ensure_forum_tables():
+                            async with DB_POOL.acquire() as conn:
+                                valid_fp = await conn.fetchval(
+                                    "SELECT COUNT(*) FROM web_forum_categories WHERE slug = $1;", slug_fp)
+                                if valid_fp:
+                                    trow_fp = await conn.fetchrow(
+                                        """INSERT INTO web_forum_topics (category_slug, author_id, author_name, title)
+                                           VALUES ($1, NULL, 'Marvin Vance', $2) RETURNING id;""", slug_fp, title_fp)
+                                    await conn.execute(
+                                        """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_marvin, content)
+                                           VALUES ($1, NULL, 'Marvin Vance', TRUE, $2);""", trow_fp["id"], content_fp)
+                                    print(f"Forum: Marvin posted his own topic '{title_fp}' in {slug_fp} (via Discord tag)")
+                    except Exception as e:
+                        print(f"Forum post tag error: {e}")
+                reply_text = re.sub(r"\s*\[FORUM_POST:.*?\]", "", reply_text, flags=re.DOTALL).strip()
                 if not reply_text:
                     reply_text = "On it — give me a minute! 🔥"
                 # Split into chunks of 1900 chars to safely prevent Discord's 2000 limit error
@@ -1707,7 +1738,7 @@ async def web_chat_reply(request):
         session["last_reply_at"] = time.time()
 
     # Hidden plumbing tags are never executed on the website and never shown.
-    reply_text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST):.*?\]", "", reply_text, flags=re.DOTALL).strip()
+    reply_text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST):.*?\]", "", reply_text, flags=re.DOTALL).strip()
     if not reply_text:
         reply_text = "Hey! Thanks for stopping by the site! 🔥"
     reply_text = reply_text[:1500]
@@ -1915,7 +1946,7 @@ def _web_error(message, status):
 
 def _strip_web_action_tags(text):
     """Website replies never execute Marvin's hidden action tags — strip them."""
-    return re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST):.*?\]", "", text or "", flags=re.DOTALL).strip()
+    return re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST):.*?\]", "", text or "", flags=re.DOTALL).strip()
 
 async def _web_auth_user(request):
     """Header-token variant of _user_for_token for GET endpoints."""
@@ -2705,7 +2736,7 @@ async def _board_marvin_reply(user, content):
             print(f"Board Marvin reply error: {e}")
             _board_marvin_state["chat"] = None
             return None
-        text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST):.*?\]", "", text, flags=re.DOTALL).strip()
+        text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST):.*?\]", "", text, flags=re.DOTALL).strip()
         if not text:
             return None
         text = text[:1000]
