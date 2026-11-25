@@ -1879,7 +1879,8 @@ async def _user_for_token(request, data):
         return None
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
-            """SELECT u.id, u.username, u.display_name, u.is_owner, u.owner_verified, u.verified_identity
+            """SELECT u.id, u.username, u.display_name, u.is_owner, u.owner_verified, u.verified_identity,
+                      u.approved, u.discord_identity
                FROM web_sessions s JOIN web_users u ON u.id = s.user_id
                WHERE s.token = $1 AND s.expires_at > $2;""",
             token, time.time())
@@ -1889,6 +1890,10 @@ async def _user_for_token(request, data):
     if user["is_owner"] and not user["owner_verified"]:
         return None
     return user
+
+async def _web_auth_user(request):
+    """Header-token variant of _user_for_token for GET endpoints."""
+    return await _user_for_token(request, {})
 
 def _public_user(user, token=None):
     out = {"username": user["username"], "display_name": user["display_name"],
