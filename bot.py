@@ -449,21 +449,30 @@ async def _get_phoenix_requests_channel(guild):
         channel = guild.get_channel(_phoenix_requests_channel_id)
         if channel:
             return channel
-    category = discord.utils.get(guild.categories, name=MONITORING_CATEGORY_NAME)
-    search_in = category.channels if category else guild.text_channels
-    for channel in search_in:
+    # Search the whole guild: the channel counts wherever it lives.
+    for channel in guild.text_channels:
         if channel.name == PHOENIX_REQUESTS_CHANNEL_NAME:
             _phoenix_requests_channel_id = channel.id
             return channel
-    if category:
-        try:
-            channel = await category.create_text_channel(
-                PHOENIX_REQUESTS_CHANNEL_NAME,
-                topic="Requests Marvin sends to Phoenix, his second brain. Phoenix watches this channel.")
-            _phoenix_requests_channel_id = channel.id
-            return channel
-        except Exception as e:
-            print(f"Phoenix requests channel create error: {e}")
+    # Not there yet — create it. Prefer the MONITORING category; if that
+    # name doesn't match the server's actual category, create it alongside
+    # #marvin-activity so it lands in the same home. (On 2026-11-24 the
+    # named-category lookup missed, creation was skipped, and Marvin's
+    # first request had to fall back to the activity feed.)
+    category = discord.utils.get(guild.categories, name=MONITORING_CATEGORY_NAME)
+    if category is None:
+        activity = await _get_activity_channel(guild)
+        if activity is not None:
+            category = activity.category
+    try:
+        channel = await guild.create_text_channel(
+            PHOENIX_REQUESTS_CHANNEL_NAME,
+            category=category,
+            topic="Requests Marvin sends to Phoenix, his second brain. Phoenix watches this channel.")
+        _phoenix_requests_channel_id = channel.id
+        return channel
+    except Exception as e:
+        print(f"Phoenix requests channel create error: {e}")
     return None
 
 async def post_phoenix_request(request_text, requester_name, where, original_message):
