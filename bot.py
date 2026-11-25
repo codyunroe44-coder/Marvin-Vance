@@ -2559,6 +2559,25 @@ async def web_admin_contacts_handled(request):
         await conn.execute("UPDATE web_contact_messages SET handled = TRUE WHERE id = $1;", mid)
     return aiohttp_web.json_response({"ok": True, "message": "Marked as handled."}, headers=_web_chat_cors_headers())
 
+async def web_admin_members(request):
+    user = await _web_auth_user(request)
+    if not user:
+        return _web_error("Log in first.", 401)
+    if not user["is_owner"]:
+        return _web_error("Only Fire Phoenix can see the member list.", 403)
+    if not await _ensure_web_tables():
+        return _web_error("The site is still warming up — try again in a minute.", 503)
+    async with DB_POOL.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT username, display_name, is_owner, approved, verified_identity, discord_identity, created_at
+               FROM web_users ORDER BY is_owner DESC, created_at ASC LIMIT 200;""")
+    return aiohttp_web.json_response({"members": [{
+        "username": r["username"], "display_name": r["display_name"],
+        "is_owner": bool(r["is_owner"]), "approved": bool(r["approved"]),
+        "verified_identity": r["verified_identity"], "discord_identity": r["discord_identity"],
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+    } for r in rows]}, headers=_web_chat_cors_headers())
+
 # ---------- community board endpoints ----------
 
 async def web_board_list(request):
@@ -3153,6 +3172,8 @@ def build_web_chat_app():
     app.router.add_options("/forum/reply", web_chat_options)
     app.router.add_post("/contact", web_contact_send)
     app.router.add_options("/contact", web_chat_options)
+    app.router.add_get("/auth/admin/members", web_admin_members)
+    app.router.add_options("/auth/admin/members", web_chat_options)
     app.router.add_get("/auth/admin/contacts", web_admin_contacts)
     app.router.add_options("/auth/admin/contacts", web_chat_options)
     app.router.add_post("/auth/admin/contacts/handled", web_admin_contacts_handled)
