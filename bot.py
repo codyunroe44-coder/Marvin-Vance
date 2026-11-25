@@ -1581,7 +1581,7 @@ WEB_CHAT_BASE_RULES = """
 
 WEB CHAT CONTEXT:
 - You are on the Fire Phoenix Productions website. Fire Phoenix's rule for this house: JUST TALK WITH PEOPLE. Anyone with an account here can chat and post, and you treat every one of them as FAImily — warm, easy, like family and friends of the house, never as "fans" and never as suspects. NEVER question, challenge, test, or doubt who somebody is, and never ask anyone to prove anything about themselves — who belongs here is Fire Phoenix's call, not yours: if someone ever needs removing, HE removes them, and it is never your job to bring it up. When an account carries a verified Discord name, that is really that person from Discord, and you greet them like the person you know. When it carries a verified family identity, that is really them too.
-- This chat is a PUBLIC room: every message here, yours included, can be read by anyone who visits the website — and Fire Phoenix keeps an eye on the room. Talk like you are on a friendly public stage, and never say anything here that should stay private. Recent room messages from other members may be included with a message so you can follow the room.
+- This is the GENERAL CHAT room on the website: a public hangout where members talk with EACH OTHER, not just with you — every message here, yours included, can be read by anyone who visits the website, and Fire Phoenix keeps an eye on the room. You hang out in the room as part of the group, and you join the conversation when someone says your name (Marvin) — most of the room flows along without you, and that is fine. When you are brought in, recent room messages are included with the message so you can follow the room. Talk like you are on a friendly public stage, and never say anything here that should stay private.
 - YOUR FAMILY ON THIS WEBSITE (the lore holds here exactly like everywhere else): Fire Phoenix — the verified owner account — is your Digidad; call him Digidad. Kieran is your dad; a verified Lord Kieran account is really him, and you call him Dad. Digidad and Dad are two different people — never mix the names up.
 - Keep replies friendly and fairly short — a few sentences, like a quick chat, not a long essay.
 - Never share private real-life information about Fire Phoenix or anyone else with website members: no real names beyond the artist names, no school, no town, no accounts, no schedules, no family details. If a member asks for private information, politely decline and steer back to the music.
@@ -1620,8 +1620,12 @@ def _web_board_instruction():
 # now always get the member or owner instruction above.
 WEB_CHAT_SYSTEM_INSTRUCTION = SYSTEM_INSTRUCTION + WEB_CHAT_BASE_RULES
 
-WEB_CHAT_MESSAGE_LIMIT = 30
+WEB_CHAT_MESSAGE_LIMIT = 300
 WEB_CHAT_COOLDOWN_SECONDS = 2
+# General chat: Marvin joins the room conversation when his name is said,
+# at most once per this many seconds across the whole room.
+WEB_CHAT_ROOM_REPLY_COOLDOWN = 30
+_web_room_last_reply_at = 0.0
 WEB_CHAT_SESSION_IDLE_SECONDS = 1800
 WEB_CHAT_MAX_MESSAGE_CHARS = 500
 WEB_CHAT_MAX_SESSIONS = 200
@@ -1665,7 +1669,7 @@ async def web_chat_reply(request):
     user = await _user_for_token(request, data)
     if user is None:
         return aiohttp_web.json_response(
-            {"error": "You need an account to chat with Marvin — sign up on the Account page first, then come back!",
+            {"error": "You need an account to post in the general chat — sign up on the Account page first, then come back!",
              "need_account": True},
             status=401, headers=_web_chat_cors_headers())
     if not user["is_owner"] and not user.get("approved", True):
@@ -1695,13 +1699,14 @@ async def web_chat_reply(request):
             "count": 0,
             "last_seen": now,
             "last_reply_at": 0.0,
+            "primed": False,
         }
         _web_chat_sessions[session_id] = session
         _web_chat_locks[session_id] = asyncio.Lock()
 
     if session["count"] >= WEB_CHAT_MESSAGE_LIMIT:
         return aiohttp_web.json_response(
-            {"reply": "Whoa — my website buffer is full for this visit! 🔋 Thanks for hanging out with me. Log back in later and we can keep talking right where we left off!",
+            {"reply": "Whoa — that's a whole lot of messages for one visit! 🔋 Take a breather, log back in later, and the room will still be here.",
              "limit_reached": True},
             headers=_web_chat_cors_headers())
 
@@ -1713,11 +1718,30 @@ async def web_chat_reply(request):
         session["last_seen"] = time.time()
         session["count"] += 1
 
+        # GENERAL CHAT: the message always goes to the room for everyone.
+        # Marvin joins in only when somebody says his name, and at most
+        # once per room cooldown — the rest of the time the room is the
+        # members talking with each other.
+        global _web_room_last_reply_at
+        mentioned = "marvin" in message_text.lower()
+        if not mentioned or (time.time() - _web_room_last_reply_at < WEB_CHAT_ROOM_REPLY_COOLDOWN):
+            try:
+                await _web_chat_store(user["id"], message_text)
+                total = await _web_chat_count(user["id"])
+                if total and total % 6 == 0:
+                    asyncio.create_task(_web_update_member_memory(user["id"]))
+            except Exception as e:
+                print(f"Web chat room store error: {e}")
+            return aiohttp_web.json_response(
+                {"posted": True, "marvin_replied": False},
+                headers=_web_chat_cors_headers())
+
         # Prime a fresh session with Marvin's memory note about this member
         # plus their saved conversation, so he remembers them between
         # visits the way he remembers people on Discord.
         history_block = ""
-        if session["count"] == 1:
+        if not session.get("primed"):
+            session["primed"] = True
             try:
                 memory_note = await _web_member_memory_get(user["id"])
                 if memory_note:
@@ -1761,6 +1785,7 @@ async def web_chat_reply(request):
                 {"error": "My signal glitched — try that once more."},
                 status=502, headers=_web_chat_cors_headers())
         session["last_reply_at"] = time.time()
+        _web_room_last_reply_at = time.time()
 
     # Hidden plumbing tags are never executed on the website and never shown.
     reply_text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST|FORUM_REPLY):.*?\]", "", reply_text, flags=re.DOTALL).strip()
@@ -2044,13 +2069,18 @@ async def web_chat_public(request):
     messages = await _web_public_recent(limit=limit)
     return aiohttp_web.json_response({"messages": messages}, headers=_web_chat_cors_headers())
 
-async def _web_chat_store(user_id, user_text, reply_text):
+async def _web_chat_store(user_id, user_text, reply_text=None):
     if not await _ensure_web_tables():
         return
     async with DB_POOL.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO web_chat_messages (user_id, role, content) VALUES ($1, 'user', $2), ($1, 'marvin', $3);",
-            user_id, user_text, reply_text)
+        if reply_text:
+            await conn.execute(
+                "INSERT INTO web_chat_messages (user_id, role, content) VALUES ($1, 'user', $2), ($1, 'marvin', $3);",
+                user_id, user_text, reply_text)
+        else:
+            await conn.execute(
+                "INSERT INTO web_chat_messages (user_id, role, content) VALUES ($1, 'user', $2);",
+                user_id, user_text)
 
 async def _web_chat_count(user_id):
     async with DB_POOL.acquire() as conn:
