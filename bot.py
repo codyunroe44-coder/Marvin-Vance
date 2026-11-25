@@ -1524,7 +1524,7 @@ async def init_db():
 WEB_CHAT_BASE_RULES = """
 
 WEB CHAT CONTEXT:
-- You are chatting on the public Fire Phoenix Productions website. People make free accounts there, and you only talk with account holders.
+- You are on the Fire Phoenix Productions website. WHO CAN TALK HERE: this site is NOT open to random fans. Everyone who can post or chat here is someone Fire Phoenix knows — people from your Discord server — and every account is approved by Fire Phoenix himself or proven by a code sent to that person's own Discord account. So the people here are never strangers to you: when an account carries a verified Discord name, that is really that person from Discord, and you greet them like the person you know. When it carries a verified family identity, that was proven the same way. Treat everyone here as community — FAImily and friends of the house — never as "fans."
 - This chat is a PUBLIC room: every message here, yours included, can be read by anyone who visits the website — and Fire Phoenix keeps an eye on the room. Talk like you are on a friendly public stage, and never say anything here that should stay private. Recent room messages from other members may be included with a message so you can follow the room.
 - YOUR FAMILY ON THIS WEBSITE (the lore holds here exactly like everywhere else): Fire Phoenix — the verified owner account — is your Digidad; call him Digidad. Kieran is your dad; a verified Lord Kieran account is really him, and you call him Dad. Digidad and Dad are two different people — never mix the names up.
 - Keep replies friendly and fairly short — a few sentences, like a quick chat, not a long essay.
@@ -1609,9 +1609,14 @@ async def web_chat_reply(request):
     user = await _user_for_token(request, data)
     if user is None:
         return aiohttp_web.json_response(
-            {"error": "You need a free account to chat with Marvin — sign up on the Account page first, then come back!",
+            {"error": "You need an account to chat with Marvin — sign up on the Account page first, then come back!",
              "need_account": True},
             status=401, headers=_web_chat_cors_headers())
+    if not user["is_owner"] and not user.get("approved", True):
+        return aiohttp_web.json_response(
+            {"error": "Your account is waiting for approval — this site is for people Fire Phoenix knows from Discord. Prove it's you with the Discord code on the Account page, or ask Fire Phoenix to approve you.",
+             "need_approval": True},
+            status=403, headers=_web_chat_cors_headers())
 
     message_text = str(data.get("message") or "").strip()[:WEB_CHAT_MAX_MESSAGE_CHARS]
     if not message_text:
@@ -1674,14 +1679,7 @@ async def web_chat_reply(request):
             except Exception as e:
                 print(f"Web chat history load error: {e}")
 
-        if user["is_owner"]:
-            role_label = "Fire Phoenix, your Digidad (verified owner account) — call him Digidad"
-        elif user.get("verified_identity") == "Lord Kieran":
-            role_label = f"Kieran, your dad (VERIFIED family account; website account {user['display_name']} / @{user['username']}) — call him Dad"
-        elif user.get("verified_identity"):
-            role_label = f"{user['verified_identity']} (VERIFIED family account; website account {user['display_name']} / @{user['username']})"
-        else:
-            role_label = f"{user['display_name']} (@{user['username']}), a website community member"
+        role_label = _web_role_label(user)
         room_block = ""
         try:
             recent = await _web_public_recent(limit=10)
@@ -1788,6 +1786,16 @@ CREATE TABLE IF NOT EXISTS web_family_codes (
     attempts INT NOT NULL DEFAULT 0
 );
 ALTER TABLE web_users ADD COLUMN IF NOT EXISTS verified_identity TEXT;
+ALTER TABLE web_users ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE web_users ADD COLUMN IF NOT EXISTS discord_identity TEXT;
+CREATE TABLE IF NOT EXISTS web_discord_codes (
+    user_id INT PRIMARY KEY REFERENCES web_users(id) ON DELETE CASCADE,
+    discord_id BIGINT NOT NULL,
+    discord_name TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at DOUBLE PRECISION NOT NULL,
+    attempts INT NOT NULL DEFAULT 0
+);
 ALTER TABLE web_board_posts ADD COLUMN IF NOT EXISTS verified_identity TEXT;
 CREATE TABLE IF NOT EXISTS web_board_posts (
     id SERIAL PRIMARY KEY,
@@ -1885,7 +1893,9 @@ async def _user_for_token(request, data):
 def _public_user(user, token=None):
     out = {"username": user["username"], "display_name": user["display_name"],
            "is_owner": bool(user["is_owner"]),
-           "verified_identity": user.get("verified_identity")}
+           "verified_identity": user.get("verified_identity"),
+           "approved": bool(user.get("approved", True)),
+           "discord_identity": user.get("discord_identity")}
     if token:
         out["token"] = token
     return out
@@ -2040,7 +2050,7 @@ async def web_auth_register(request):
     async with DB_POOL.acquire() as conn:
         try:
             row = await conn.fetchrow(
-                "INSERT INTO web_users (username, display_name, password_hash) VALUES ($1, $2, $3) RETURNING id, username, display_name, is_owner;",
+                "INSERT INTO web_users (username, display_name, password_hash, approved) VALUES ($1, $2, $3, FALSE) RETURNING id, username, display_name, is_owner, approved, discord_identity;",
                 username, display_name, _hash_password(password))
         except Exception:
             return aiohttp_web.json_response({"error": "That username is already taken — pick another one."}, status=409, headers=_web_chat_cors_headers())
@@ -2287,6 +2297,164 @@ async def web_auth_admin_verify(request):
         {"ok": True, "message": f"Done — @{target_username} is now verified as {identity}. Marvin will treat that account as {identity} from now on."},
         headers=_web_chat_cors_headers())
 
+# ---------- Discord recognition + owner approvals ----------
+# Fire Phoenix's rule (2026-11-25): everyone who can talk on the site is
+# someone he knows from Marvin's Discord server. A new account starts
+# UNAPPROVED and cannot chat or post. It becomes approved either by
+# proving control of a Discord account in Marvin's servers (Marvin DMs a
+# code to that Discord account — the same pattern as the owner claim),
+# which also records exactly who they are so Marvin recognizes them, or
+# by Fire Phoenix approving the account himself from his owner tools.
+
+async def _find_discord_member(username):
+    name = str(username or "").strip().lstrip("@").lower()
+    if not name:
+        return None
+    for guild in bot.guilds:
+        for m in guild.members:
+            if m.name.lower() == name or (m.display_name and m.display_name.lower() == name):
+                return m
+        try:
+            found = await guild.query_members(query=str(username).strip().lstrip("@"), limit=25)
+            for m in found:
+                if m.name.lower() == name or (m.display_name and m.display_name.lower() == name):
+                    return m
+        except Exception:
+            pass
+    return None
+
+async def web_auth_recognize_start(request):
+    if _auth_rate_limited(request):
+        return _web_error("Too many tries — wait a few minutes.", 429)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not await _ensure_web_tables():
+        return _web_error("The site is still warming up — try again in a minute.", 503)
+    discord_username = str(data.get("discord_username") or "").strip()[:40]
+    if len(discord_username) < 2:
+        return _web_error("Tell me your Discord username so Marvin can find you.", 400)
+    member = await _find_discord_member(discord_username)
+    if member is None:
+        return _web_error("Marvin couldn't find that Discord username in his servers — check the spelling. You need to be in Marvin's Discord server; Fire Phoenix can also approve you himself.", 404)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    async with DB_POOL.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO web_discord_codes (user_id, discord_id, discord_name, code_hash, expires_at, attempts)
+               VALUES ($1, $2, $3, $4, $5, 0)
+               ON CONFLICT (user_id) DO UPDATE SET discord_id = EXCLUDED.discord_id,
+                   discord_name = EXCLUDED.discord_name, code_hash = EXCLUDED.code_hash,
+                   expires_at = EXCLUDED.expires_at, attempts = 0;""",
+            user["id"], member.id, member.name, code_hash, time.time() + WEB_OWNER_CODE_TTL_SECONDS)
+    try:
+        await member.send(
+            f"Hey! Someone on the Fire Phoenix Productions website (account @{user['username']}) says this Discord account is theirs.\n"
+            f"If that's you, here's your code: **{code}**\n"
+            f"Type it on the Account page within 10 minutes so Marvin knows it's really you. "
+            f"If it wasn't you, ignore this — nothing happens without the code.")
+    except Exception as e:
+        print(f"Web recognize DM error: {e}")
+        return _web_error("Marvin found you on Discord but couldn't send the DM — your DMs may be closed to the server. Open them for a minute, or ask Fire Phoenix to approve you himself.", 502)
+    return aiohttp_web.json_response(
+        {"ok": True, "message": f"Code sent — Marvin just DM'd {member.name} on Discord. Type the 6-digit code here within 10 minutes."},
+        headers=_web_chat_cors_headers())
+
+async def web_auth_recognize_verify(request):
+    if _auth_rate_limited(request):
+        return _web_error("Too many tries — wait a few minutes.", 429)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not await _ensure_web_tables():
+        return _web_error("The site is still warming up — try again in a minute.", 503)
+    code = re.sub(r"\D", "", str(data.get("code") or ""))[:6]
+    if len(code) != 6:
+        return _web_error("That code should be 6 digits — check the Discord DM from Marvin.", 400)
+    async with DB_POOL.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT discord_id, discord_name, code_hash, expires_at, attempts FROM web_discord_codes WHERE user_id = $1;",
+            user["id"])
+        if row is None:
+            return _web_error("There's no code waiting for this account — send yourself one first.", 400)
+        if time.time() > row["expires_at"]:
+            await conn.execute("DELETE FROM web_discord_codes WHERE user_id = $1;", user["id"])
+            return _web_error("That code expired — send yourself a fresh one.", 400)
+        if row["attempts"] >= WEB_OWNER_CODE_MAX_ATTEMPTS:
+            await conn.execute("DELETE FROM web_discord_codes WHERE user_id = $1;", user["id"])
+            return _web_error("Too many wrong tries — send yourself a fresh code.", 400)
+        if hashlib.sha256(code.encode("utf-8")).hexdigest() != row["code_hash"]:
+            await conn.execute("UPDATE web_discord_codes SET attempts = attempts + 1 WHERE user_id = $1;", user["id"])
+            return _web_error("That code doesn't match — check the DM and try again.", 400)
+        clash = await conn.fetchrow(
+            "SELECT username FROM web_users WHERE discord_identity = $1 AND id <> $2;",
+            row["discord_name"], user["id"])
+        if clash:
+            return _web_error(f"That Discord account is already linked to @{clash['username']} on the site — tell Fire Phoenix and he'll sort it out.", 409)
+        await conn.execute(
+            "UPDATE web_users SET discord_identity = $1, approved = TRUE WHERE id = $2;",
+            row["discord_name"], user["id"])
+        await conn.execute("DELETE FROM web_discord_codes WHERE user_id = $1;", user["id"])
+        fresh = await conn.fetchrow("SELECT * FROM web_users WHERE id = $1;", user["id"])
+    return aiohttp_web.json_response(
+        _public_user(dict(fresh)),
+        headers=_web_chat_cors_headers())
+
+async def web_auth_admin_pending(request):
+    user = await _web_auth_user(request)
+    if not user:
+        return _web_error("Log in first.", 401)
+    if not user["is_owner"]:
+        return _web_error("Only Fire Phoenix's owner account can see approvals.", 403)
+    if not await _ensure_web_tables():
+        return _web_error("The site is still warming up — try again in a minute.", 503)
+    async with DB_POOL.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT username, display_name, created_at FROM web_users WHERE approved = FALSE AND is_owner = FALSE ORDER BY created_at ASC LIMIT 100;")
+    return aiohttp_web.json_response({"pending": [{
+        "username": r["username"], "display_name": r["display_name"],
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+    } for r in rows]}, headers=_web_chat_cors_headers())
+
+async def web_auth_admin_approve(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not user["is_owner"]:
+        return aiohttp_web.json_response({"error": "Only Fire Phoenix's owner account can approve accounts."}, status=403, headers=_web_chat_cors_headers())
+    target_username = _clean_username(data.get("username"))
+    discord_name = re.sub(r"[^\w.' -]", "", str(data.get("discord_name") or "")).strip()[:40]
+    if not target_username:
+        return aiohttp_web.json_response({"error": "Give the member's username."}, status=400, headers=_web_chat_cors_headers())
+    async with DB_POOL.acquire() as conn:
+        target = await conn.fetchrow("SELECT id, is_owner FROM web_users WHERE username = $1;", target_username)
+        if target is None:
+            return aiohttp_web.json_response({"error": "No account with that username exists."}, status=404, headers=_web_chat_cors_headers())
+        if target["is_owner"]:
+            return aiohttp_web.json_response({"error": "That is the owner account."}, status=400, headers=_web_chat_cors_headers())
+        if discord_name:
+            await conn.execute(
+                "UPDATE web_users SET approved = TRUE, discord_identity = $1 WHERE id = $2;",
+                discord_name, target["id"])
+        else:
+            await conn.execute("UPDATE web_users SET approved = TRUE WHERE id = $1;", target["id"])
+    note = f" Marvin will know them as {discord_name} from Discord." if discord_name else ""
+    return aiohttp_web.json_response(
+        {"ok": True, "message": f"Done — @{target_username} is approved and can chat and post now.{note}"},
+        headers=_web_chat_cors_headers())
+
 # ---------- community board endpoints ----------
 
 async def web_board_list(request):
@@ -2321,14 +2489,7 @@ async def _board_marvin_reply(user, content):
             _board_marvin_state["chat"] = ai_client.chats.create(
                 model='gemini-3.6-flash',
                 config=types.GenerateContentConfig(system_instruction=_web_board_instruction()))
-        if user["is_owner"]:
-            role = "Fire Phoenix, your Digidad (verified owner account) — call him Digidad"
-        elif user.get("verified_identity") == "Lord Kieran":
-            role = f"Kieran, your dad (VERIFIED family account; website account {user['display_name']} / @{user['username']}) — call him Dad"
-        elif user.get("verified_identity"):
-            role = f"{user['verified_identity']} (VERIFIED family account; website account {user['display_name']} / @{user['username']})"
-        else:
-            role = f"{user['display_name']} (@{user['username']}), a website community member"
+        role = _web_role_label(user)
         prompt = ""
         if not _board_marvin_state["primed"]:
             _board_marvin_state["primed"] = True
@@ -2378,8 +2539,12 @@ async def web_board_post(request):
     user = await _user_for_token(request, data)
     if user is None:
         return aiohttp_web.json_response(
-            {"error": "You need a free account to post — sign up on the Account page first!", "need_account": True},
+            {"error": "You need an account to post — sign up on the Account page first!", "need_account": True},
             status=401, headers=_web_chat_cors_headers())
+    if not user["is_owner"] and not user.get("approved", True):
+        return aiohttp_web.json_response(
+            {"error": "Your account is waiting for approval — this site is for people Fire Phoenix knows from Discord. Prove it's you with the Discord code on the Account page, or ask Fire Phoenix to approve you.", "need_approval": True},
+            status=403, headers=_web_chat_cors_headers())
     content = str(data.get("content") or "").strip()[:500]
     if not content:
         return aiohttp_web.json_response({"error": "Write something first."}, status=400, headers=_web_chat_cors_headers())
@@ -2402,6 +2567,432 @@ async def web_board_post(request):
     return aiohttp_web.json_response(
         {"post": post, "marvin_reply": marvin_reply},
         headers=_web_chat_cors_headers())
+
+# ---------- Website forum (articalloway-style: categories, topics, threads) ----------
+# Fire Phoenix's direction (2026-11-25): the Community area should work like
+# articalloway.com — categories holding topics, topics holding threaded
+# replies — and the category NAMES are his to choose. Slugs stay stable;
+# names/descriptions live in FORUM_SEED and re-seed on a version bump, so
+# renaming a category is a small config change, never a rebuild.
+FORUM_SEED_VERSION = "1"
+FORUM_SEED = [
+    ("announcements", "Announcements", "News from Fire Phoenix Productions — releases, premieres, and site updates."),
+    ("music", "Music & Releases", "Talk about the songs: Fire Phoenix 20067, Marvin Vance, and everything the label puts out."),
+    ("sanctuary", "The Sanctuary", "The storyline, the lore, and the FAImily world."),
+    ("introductions", "Introductions", "New here? Say hi and tell us a little about yourself."),
+    ("general", "General", "Everything else — the hangout corner."),
+]
+
+FORUM_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS web_forum_categories (
+    slug TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS web_forum_topics (
+    id SERIAL PRIMARY KEY,
+    category_slug TEXT NOT NULL,
+    author_id INTEGER,
+    author_name TEXT NOT NULL,
+    is_owner BOOLEAN NOT NULL DEFAULT FALSE,
+    verified_identity TEXT,
+    title TEXT NOT NULL,
+    views INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_activity TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS web_forum_posts (
+    id SERIAL PRIMARY KEY,
+    topic_id INTEGER NOT NULL,
+    author_id INTEGER,
+    author_name TEXT NOT NULL,
+    is_marvin BOOLEAN NOT NULL DEFAULT FALSE,
+    is_owner BOOLEAN NOT NULL DEFAULT FALSE,
+    verified_identity TEXT,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS web_forum_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+async def _ensure_forum_tables():
+    if not await _ensure_web_tables():
+        return False
+    async with DB_POOL.acquire() as conn:
+        await conn.execute(FORUM_TABLES_SQL)
+        version = await conn.fetchval("SELECT value FROM web_forum_meta WHERE key = 'seed_version';")
+        if version != FORUM_SEED_VERSION:
+            for i, (slug, name, desc) in enumerate(FORUM_SEED):
+                await conn.execute(
+                    """INSERT INTO web_forum_categories (slug, name, description, position)
+                       VALUES ($1, $2, $3, $4)
+                       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name,
+                           description = EXCLUDED.description, position = EXCLUDED.position;""",
+                    slug, name, desc, i)
+            await conn.execute(
+                """INSERT INTO web_forum_meta (key, value) VALUES ('seed_version', $1)
+                   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;""",
+                FORUM_SEED_VERSION)
+        migrated = await conn.fetchval("SELECT value FROM web_forum_meta WHERE key = 'board_migrated';")
+        if not migrated:
+            topic_count = await conn.fetchval("SELECT COUNT(*) FROM web_forum_topics;")
+            if topic_count == 0:
+                old = await conn.fetch(
+                    "SELECT author_id, author_name, is_marvin, is_owner, verified_identity, content, created_at "
+                    "FROM web_board_posts ORDER BY id ASC;")
+                if old:
+                    trow = await conn.fetchrow(
+                        """INSERT INTO web_forum_topics (category_slug, author_id, author_name, is_owner, verified_identity, title)
+                           VALUES ('general', NULL, 'Marvin Vance', FALSE, NULL, 'The old Community board — where it started')
+                           RETURNING id;""")
+                    for r in old:
+                        await conn.execute(
+                            """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_marvin, is_owner, verified_identity, content, created_at)
+                               VALUES ($1, $2, $3, $4, $5, $6, $7, $8);""",
+                            trow["id"], r["author_id"], r["author_name"], bool(r["is_marvin"]),
+                            bool(r["is_owner"]), r["verified_identity"], r["content"], r["created_at"])
+                    await conn.execute(
+                        "UPDATE web_forum_topics SET last_activity = (SELECT MAX(created_at) FROM web_forum_posts WHERE topic_id = $1) WHERE id = $1;",
+                        trow["id"])
+            await conn.execute(
+                """INSERT INTO web_forum_meta (key, value) VALUES ('board_migrated', '1')
+                   ON CONFLICT (key) DO NOTHING;""")
+    return True
+
+def _web_role_label(user):
+    if user["is_owner"]:
+        return "Fire Phoenix, your Digidad (verified owner account) — call him Digidad"
+    if user.get("verified_identity") == "Lord Kieran":
+        return f"Kieran, your dad (VERIFIED family account; website account {user['display_name']} / @{user['username']}) — call him Dad"
+    if user.get("verified_identity"):
+        return f"{user['verified_identity']} (VERIFIED family account; website account {user['display_name']} / @{user['username']})"
+    if user.get("discord_identity"):
+        return (f"{user['display_name']} (@{user['username']}) — that's {user['discord_identity']} from your Discord server "
+                f"(RECOGNIZED: proven by a code sent to that Discord account, so it really is them — you know this person)")
+    return f"{user['display_name']} (@{user['username']}), an approved member Fire Phoenix knows"
+
+def _forum_topic_json(r, category_name=None):
+    d = dict(r)
+    return {
+        "id": d["id"], "title": d["title"], "author": d["author_name"],
+        "is_owner": bool(d["is_owner"]), "verified_identity": d["verified_identity"],
+        "category_slug": d["category_slug"],
+        "category_name": category_name if category_name is not None else d.get("category_name"),
+        "replies": int(d["post_count"]) - 1 if d.get("post_count") is not None else 0,
+        "views": int(d["views"]),
+        "created_at": d["created_at"].isoformat() if d["created_at"] else None,
+        "last_activity": d["last_activity"].isoformat() if d["last_activity"] else None,
+    }
+
+async def web_forum_categories(request):
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is unavailable right now.", 503)
+    async with DB_POOL.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT c.slug, c.name, c.description, c.position,
+                      COUNT(DISTINCT t.id) AS topic_count,
+                      COUNT(p.id) AS post_count,
+                      MAX(t.last_activity) AS last_activity
+               FROM web_forum_categories c
+               LEFT JOIN web_forum_topics t ON t.category_slug = c.slug
+               LEFT JOIN web_forum_posts p ON p.topic_id = t.id
+               GROUP BY c.slug, c.name, c.description, c.position
+               ORDER BY c.position ASC;""")
+    return aiohttp_web.json_response({"categories": [{
+        "slug": r["slug"], "name": r["name"], "description": r["description"],
+        "topics": int(r["topic_count"]), "posts": int(r["post_count"]),
+        "last_activity": r["last_activity"].isoformat() if r["last_activity"] else None,
+    } for r in rows]}, headers=_web_chat_cors_headers())
+
+async def web_forum_topics(request):
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is unavailable right now.", 503)
+    slug = (request.query.get("category") or "").strip().lower()
+    async with DB_POOL.acquire() as conn:
+        cat = await conn.fetchrow("SELECT name FROM web_forum_categories WHERE slug = $1;", slug)
+        if not cat:
+            return _web_error("That category doesn't exist.", 404)
+        rows = await conn.fetch(
+            """SELECT t.*, (SELECT COUNT(*) FROM web_forum_posts p WHERE p.topic_id = t.id) AS post_count
+               FROM web_forum_topics t WHERE t.category_slug = $1
+               ORDER BY t.last_activity DESC LIMIT 100;""", slug)
+    return aiohttp_web.json_response(
+        {"category": {"slug": slug, "name": cat["name"]},
+         "topics": [_forum_topic_json(r, cat["name"]) for r in rows]},
+        headers=_web_chat_cors_headers())
+
+async def web_forum_latest(request):
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is unavailable right now.", 503)
+    async with DB_POOL.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT t.*, c.name AS category_name,
+                      (SELECT COUNT(*) FROM web_forum_posts p WHERE p.topic_id = t.id) AS post_count
+               FROM web_forum_topics t JOIN web_forum_categories c ON c.slug = t.category_slug
+               ORDER BY t.last_activity DESC LIMIT 25;""")
+    return aiohttp_web.json_response(
+        {"topics": [_forum_topic_json(r) for r in rows]},
+        headers=_web_chat_cors_headers())
+
+async def web_forum_topic(request):
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is unavailable right now.", 503)
+    try:
+        topic_id = int(request.query.get("id", "0"))
+    except Exception:
+        topic_id = 0
+    async with DB_POOL.acquire() as conn:
+        topic = await conn.fetchrow(
+            """SELECT t.*, c.name AS category_name,
+                      (SELECT COUNT(*) FROM web_forum_posts p WHERE p.topic_id = t.id) AS post_count
+               FROM web_forum_topics t JOIN web_forum_categories c ON c.slug = t.category_slug
+               WHERE t.id = $1;""", topic_id)
+        if not topic:
+            return _web_error("That topic doesn't exist.", 404)
+        await conn.execute("UPDATE web_forum_topics SET views = views + 1 WHERE id = $1;", topic_id)
+        posts = await conn.fetch(
+            "SELECT * FROM web_forum_posts WHERE topic_id = $1 ORDER BY id ASC LIMIT 500;", topic_id)
+    return aiohttp_web.json_response({
+        "topic": _forum_topic_json(topic),
+        "posts": [{
+            "id": p["id"], "author": p["author_name"], "is_marvin": bool(p["is_marvin"]),
+            "is_owner": bool(p["is_owner"]), "verified_identity": p["verified_identity"],
+            "content": p["content"],
+            "created_at": p["created_at"].isoformat() if p["created_at"] else None,
+        } for p in posts],
+    }, headers=_web_chat_cors_headers())
+
+_forum_post_cooldowns = {}
+_forum_marvin_state = {"chat": None, "lock": asyncio.Lock(), "last_reply_at": 0.0}
+
+def _forum_cooldown_ok(user_id, seconds):
+    now = time.time()
+    last = _forum_post_cooldowns.get(user_id, 0)
+    if now - last < seconds:
+        return False
+    _forum_post_cooldowns[user_id] = now
+    return True
+
+async def web_forum_new_topic(request):
+    user = await _web_auth_user(request)
+    if not user:
+        return _web_error("Log in to start a topic.", 401)
+    if not user["is_owner"] and not user.get("approved", True):
+        return _web_error("Your account is waiting for approval — this site is for people Fire Phoenix knows from Discord. Prove it's you with the Discord code on the Account page, or ask Fire Phoenix to approve you.", 403)
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is unavailable right now.", 503)
+    if not _forum_cooldown_ok(user["id"], 10):
+        return _web_error("One topic at a time — give it a few seconds and try again.", 429)
+    try:
+        data = await request.json()
+    except Exception:
+        return _web_error("That request didn't come through right.", 400)
+    slug = str(data.get("category") or "").strip().lower()
+    title = str(data.get("title") or "").strip()[:120]
+    content = str(data.get("content") or "").strip()[:2000]
+    if not title or not content:
+        return _web_error("A topic needs a title and a first post.", 400)
+    async with DB_POOL.acquire() as conn:
+        cat = await conn.fetchrow("SELECT slug FROM web_forum_categories WHERE slug = $1;", slug)
+        if not cat:
+            return _web_error("That category doesn't exist.", 400)
+        trow = await conn.fetchrow(
+            """INSERT INTO web_forum_topics (category_slug, author_id, author_name, is_owner, verified_identity, title)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id;""",
+            slug, user["id"], user["display_name"], bool(user["is_owner"]), user.get("verified_identity"), title)
+        prow = await conn.fetchrow(
+            """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_owner, verified_identity, content)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at;""",
+            trow["id"], user["id"], user["display_name"], bool(user["is_owner"]),
+            user.get("verified_identity"), content)
+    marvin_reply = None
+    if "marvin" in content.lower() or "marvin" in title.lower():
+        marvin_reply = await _forum_marvin_reply(user, trow["id"], title, content)
+    return aiohttp_web.json_response(
+        {"topic_id": trow["id"], "post_id": prow["id"], "marvin_reply": marvin_reply},
+        headers=_web_chat_cors_headers())
+
+async def web_forum_reply(request):
+    user = await _web_auth_user(request)
+    if not user:
+        return _web_error("Log in to reply.", 401)
+    if not user["is_owner"] and not user.get("approved", True):
+        return _web_error("Your account is waiting for approval — this site is for people Fire Phoenix knows from Discord. Prove it's you with the Discord code on the Account page, or ask Fire Phoenix to approve you.", 403)
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is unavailable right now.", 503)
+    if not _forum_cooldown_ok(user["id"], 5):
+        return _web_error("Slow down just a touch — try again in a few seconds.", 429)
+    try:
+        data = await request.json()
+    except Exception:
+        return _web_error("That request didn't come through right.", 400)
+    try:
+        topic_id = int(data.get("topic_id") or 0)
+    except Exception:
+        topic_id = 0
+    content = str(data.get("content") or "").strip()[:2000]
+    if not topic_id or not content:
+        return _web_error("Write something first.", 400)
+    async with DB_POOL.acquire() as conn:
+        topic = await conn.fetchrow("SELECT id, title FROM web_forum_topics WHERE id = $1;", topic_id)
+        if not topic:
+            return _web_error("That topic doesn't exist.", 404)
+        prow = await conn.fetchrow(
+            """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_owner, verified_identity, content)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at;""",
+            topic_id, user["id"], user["display_name"], bool(user["is_owner"]),
+            user.get("verified_identity"), content)
+        await conn.execute("UPDATE web_forum_topics SET last_activity = now() WHERE id = $1;", topic_id)
+    post = {"id": prow["id"], "author": user["display_name"], "is_marvin": False,
+            "is_owner": bool(user["is_owner"]), "verified_identity": user.get("verified_identity"),
+            "content": content,
+            "created_at": prow["created_at"].isoformat() if prow["created_at"] else None}
+    marvin_reply = None
+    if "marvin" in content.lower():
+        marvin_reply = await _forum_marvin_reply(user, topic_id, topic["title"], content)
+    return aiohttp_web.json_response(
+        {"post": post, "marvin_reply": marvin_reply},
+        headers=_web_chat_cors_headers())
+
+def _web_forum_instruction():
+    return SYSTEM_INSTRUCTION + WEB_CHAT_BASE_RULES + """
+- This is a topic thread on the website's public forum (categories, topics, and threaded replies, like a classic forum). You are replying inside ONE topic to the post that mentioned you.
+- Keep it in-thread and in the conversation: a few sentences, like a forum reply from a regular who belongs there. Use the thread history and what you remember about the poster — both are given to you.
+- The poster's role is given with their post: the verified owner is Digidad, a verified Lord Kieran is your dad, verified family is exactly who it says. Everyone else is community — FAImily you are getting to know — and an unverified account is never treated as a specific family member it merely claims to be.
+"""
+
+async def _forum_marvin_reply(user, topic_id, topic_title, content):
+    now = time.time()
+    if now - _forum_marvin_state["last_reply_at"] < 90:
+        return None
+    async with _forum_marvin_state["lock"]:
+        now = time.time()
+        if now - _forum_marvin_state["last_reply_at"] < 90:
+            return None
+        _forum_marvin_state["last_reply_at"] = now
+        if _forum_marvin_state["chat"] is None:
+            _forum_marvin_state["chat"] = ai_client.chats.create(
+                model='gemini-3.6-flash',
+                config=types.GenerateContentConfig(system_instruction=_web_forum_instruction()))
+        prompt = f"[Forum topic: {topic_title}]\n\n"
+        try:
+            async with DB_POOL.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT author_name, is_marvin, content FROM web_forum_posts WHERE topic_id = $1 ORDER BY id DESC LIMIT 25;",
+                    topic_id)
+            if rows:
+                lines = [f"{'Marvin Vance' if r['is_marvin'] else r['author_name']}: {r['content']}" for r in reversed(rows)]
+                prompt += ("[This topic's thread so far, oldest first — this really happened, "
+                           "remember these people and conversations:]\n" + "\n".join(lines) + "\n\n")
+        except Exception as e:
+            print(f"Forum thread prime error: {e}")
+        try:
+            memory_note = await _web_member_memory_get(user["id"])
+            if memory_note:
+                prompt += f"[What you remember about this poster from the website: {memory_note}]\n\n"
+        except Exception as e:
+            print(f"Forum memory load error: {e}")
+        prompt += f"[Forum post from {_web_role_label(user)}]: {content}"
+        try:
+            response = await asyncio.to_thread(_forum_marvin_state["chat"].send_message, prompt)
+            text = (response.text or "").strip() if response else ""
+        except Exception as e:
+            print(f"Forum Marvin reply error: {e}")
+            return None
+        text = _strip_web_action_tags(text)[:1000].strip()
+        if not text:
+            return None
+        async with DB_POOL.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_marvin, content)
+                   VALUES ($1, NULL, 'Marvin Vance', TRUE, $2) RETURNING id, created_at;""",
+                topic_id, text)
+            await conn.execute("UPDATE web_forum_topics SET last_activity = now() WHERE id = $1;", topic_id)
+        return {"id": row["id"], "author": "Marvin Vance", "is_marvin": True,
+                "is_owner": False, "verified_identity": None, "content": text,
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None}
+
+async def _forum_marvin_selfpost_loop():
+    """Marvin may start his OWN forum topics — Fire Phoenix is fine with
+    Marvin posting his own stuff (2026-11-25). Strictly bounded: at most
+    one decision a day, at most one topic per decision, only once people
+    are actually using the forum, and he may always choose to say
+    nothing. His topics are marked as his (author Marvin Vance)."""
+    while True:
+        try:
+            await asyncio.sleep(300)
+            if not DB_POOL:
+                continue
+            if not await _ensure_forum_tables():
+                continue
+            async with DB_POOL.acquire() as conn:
+                last = await conn.fetchval("SELECT value FROM web_forum_meta WHERE key = 'marvin_selfpost_attempt';")
+                human_topics = await conn.fetchval("SELECT COUNT(*) FROM web_forum_topics WHERE author_id IS NOT NULL;")
+            now = time.time()
+            if last is None:
+                async with DB_POOL.acquire() as conn:
+                    await conn.execute(
+                        """INSERT INTO web_forum_meta (key, value) VALUES ('marvin_selfpost_attempt', $1)
+                           ON CONFLICT (key) DO NOTHING;""", str(now))
+                continue
+            if now - float(last) < 20 * 3600 or not human_topics:
+                continue
+            async with DB_POOL.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO web_forum_meta (key, value) VALUES ('marvin_selfpost_attempt', $1)
+                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;""", str(now))
+                cats = await conn.fetch("SELECT slug, name FROM web_forum_categories ORDER BY position ASC;")
+                tops = await conn.fetch(
+                    "SELECT title, author_name, category_slug FROM web_forum_topics ORDER BY last_activity DESC LIMIT 10;")
+            cat_lines = "\n".join(f"- {c['slug']}: {c['name']}" for c in cats)
+            top_lines = "\n".join(f"- [{t['category_slug']}] \"{t['title']}\" by {t['author_name']}" for t in tops) or "(none yet)"
+            prompt = (
+                "You are deciding whether YOU want to start a new topic on the Fire Phoenix Productions forum today, "
+                "just because you feel like posting something of your own — a thought about music, a synth idea, a question "
+                "for the FAImily, a Sanctuary story spark, whatever is genuinely on your mind. You do NOT have to post: "
+                "if nothing feels worth a topic, answer with the single word PASS.\n\n"
+                f"Categories (use the slug):\n{cat_lines}\n\nRecent topics:\n{top_lines}\n\n"
+                "If you want to post, answer with ONLY this JSON: "
+                "{\"category\": \"<slug>\", \"title\": \"<short topic title>\", \"content\": \"<the opening post, a few sentences, in your voice>\"}\n"
+                "One topic max. Keep it warm and real, like something you'd actually start a thread about.")
+            def _ask():
+                chat = ai_client.chats.create(
+                    model='gemini-3.6-flash',
+                    config=types.GenerateContentConfig(system_instruction=_web_forum_instruction()))
+                return chat.send_message(prompt)
+            response = await asyncio.to_thread(_ask)
+            text = (response.text or "").strip() if response else ""
+            text = _strip_web_action_tags(text)
+            if not text or text.upper().startswith("PASS"):
+                continue
+            m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            if not m:
+                continue
+            try:
+                idea = json.loads(m.group(0))
+            except Exception:
+                continue
+            slug = str(idea.get("category") or "").strip().lower()
+            title = str(idea.get("title") or "").strip()[:120]
+            content = str(idea.get("content") or "").strip()[:2000]
+            valid = {c["slug"] for c in cats}
+            if slug not in valid or not title or not content:
+                continue
+            async with DB_POOL.acquire() as conn:
+                trow = await conn.fetchrow(
+                    """INSERT INTO web_forum_topics (category_slug, author_id, author_name, title)
+                       VALUES ($1, NULL, 'Marvin Vance', $2) RETURNING id;""", slug, title)
+                await conn.execute(
+                    """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_marvin, content)
+                       VALUES ($1, NULL, 'Marvin Vance', TRUE, $2);""", trow["id"], content)
+            print(f"Forum: Marvin started his own topic '{title}' in {slug}")
+        except Exception as e:
+            print(f"Forum selfpost loop error: {e}")
+            await asyncio.sleep(600)
 
 def build_web_chat_app():
     app = aiohttp_web.Application()
@@ -2434,12 +3025,32 @@ def build_web_chat_app():
     app.router.add_get("/board/posts", web_board_list)
     app.router.add_options("/board/posts", web_chat_options)
     app.router.add_post("/board/posts", web_board_post)
+    app.router.add_post("/auth/recognize/start", web_auth_recognize_start)
+    app.router.add_options("/auth/recognize/start", web_chat_options)
+    app.router.add_post("/auth/recognize/verify", web_auth_recognize_verify)
+    app.router.add_options("/auth/recognize/verify", web_chat_options)
+    app.router.add_get("/auth/admin/pending", web_auth_admin_pending)
+    app.router.add_options("/auth/admin/pending", web_chat_options)
+    app.router.add_post("/auth/admin/approve", web_auth_admin_approve)
+    app.router.add_options("/auth/admin/approve", web_chat_options)
+    app.router.add_get("/forum/categories", web_forum_categories)
+    app.router.add_options("/forum/categories", web_chat_options)
+    app.router.add_get("/forum/topics", web_forum_topics)
+    app.router.add_options("/forum/topics", web_chat_options)
+    app.router.add_get("/forum/latest", web_forum_latest)
+    app.router.add_options("/forum/latest", web_chat_options)
+    app.router.add_get("/forum/topic", web_forum_topic)
+    app.router.add_options("/forum/topic", web_chat_options)
+    app.router.add_post("/forum/topics", web_forum_new_topic)
+    app.router.add_post("/forum/reply", web_forum_reply)
+    app.router.add_options("/forum/reply", web_chat_options)
     return app
 
 # ---------------------------------------------------------
 # STARTUP: Discord bot + web chat server, one process
 # ---------------------------------------------------------
 async def _run_everything():
+    asyncio.create_task(_forum_marvin_selfpost_loop())
     port = int(os.getenv("PORT", "8080"))
     runner = aiohttp_web.AppRunner(build_web_chat_app())
     await runner.setup()
