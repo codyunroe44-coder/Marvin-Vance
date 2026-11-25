@@ -2187,6 +2187,12 @@ async def web_auth_owner_verify(request):
 # ---------- family verification endpoints ----------
 
 async def web_auth_family_start(request):
+    # Fire Phoenix (2026-11-25): Kieran verified himself, so the open
+    # family claim door is CLOSED. Verification now happens only through
+    # Fire Phoenix's owner tools.
+    return aiohttp_web.json_response(
+        {"error": "Family self-verification is closed — Kieran is verified. Fire Phoenix verifies accounts personally now; send him a message from the contact form on the Account page."},
+        status=410, headers=_web_chat_cors_headers())
     if _auth_rate_limited(request):
         return aiohttp_web.json_response({"error": "Too many tries — wait a few minutes."}, status=429, headers=_web_chat_cors_headers())
     try:
