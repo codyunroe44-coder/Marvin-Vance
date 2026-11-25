@@ -2462,9 +2462,9 @@ async def web_auth_admin_approve(request):
 
 # ---------- Contact Fire Phoenix ----------
 # Fire Phoenix's direction (2026-11-25): members need a way to contact
-# him when they need him. A logged-in member sends from the Account page;
-# the message is stored for his owner inbox AND DM'd straight to his
-# Discord by Marvin, so it reaches him where he actually is.
+# him when they need him — but NOT through Marvin: no Discord DMs about
+# the website, ever. A logged-in member sends from the Account page and
+# the message is stored ONLY in his owner inbox on the site.
 
 CONTACT_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS web_contact_messages (
@@ -2502,22 +2502,8 @@ async def web_contact_send(request):
             """INSERT INTO web_contact_messages (user_id, author_name, discord_identity, content)
                VALUES ($1, $2, $3, $4) RETURNING id;""",
             user["id"], user["display_name"], user.get("discord_identity"), content)
-    who = user["display_name"] + f" (@{user['username']})"
-    if user.get("verified_identity"):
-        who += f" — verified as {user['verified_identity']}"
-    elif user.get("discord_identity"):
-        who += f" — {user['discord_identity']} on Discord"
-    if not user.get("approved", True) and not user["is_owner"]:
-        who += " — (account still waiting for approval)"
-    try:
-        discord_user = bot.get_user(FIRE_PHOENIX_DISCORD_ID) or await bot.fetch_user(FIRE_PHOENIX_DISCORD_ID)
-        await discord_user.send(
-            f"📬 **Website contact** from {who}:\n\n{content}\n\n"
-            f"_(Sent from the Fire Phoenix Productions site. It's also saved in your owner tools on the Account page.)_")
-    except Exception as e:
-        print(f"Web contact DM error: {e}")
     return aiohttp_web.json_response(
-        {"ok": True, "id": row["id"], "message": "Sent — your message went straight to Fire Phoenix's Discord, and it's saved for him on the site too."},
+        {"ok": True, "id": row["id"], "message": "Sent — your message is saved for Fire Phoenix in his inbox on this site. He reads them here."},
         headers=_web_chat_cors_headers())
 
 async def web_admin_contacts(request):
