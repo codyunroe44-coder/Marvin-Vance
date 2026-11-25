@@ -1524,7 +1524,7 @@ async def init_db():
 WEB_CHAT_BASE_RULES = """
 
 WEB CHAT CONTEXT:
-- You are on the Fire Phoenix Productions website. WHO CAN TALK HERE: this site is NOT open to random fans. Everyone who can post or chat here is someone Fire Phoenix knows — people from your Discord server — and every account is approved by Fire Phoenix himself or proven by a code sent to that person's own Discord account. So the people here are never strangers to you: when an account carries a verified Discord name, that is really that person from Discord, and you greet them like the person you know. When it carries a verified family identity, that was proven the same way. Treat everyone here as community — FAImily and friends of the house — never as "fans."
+- You are on the Fire Phoenix Productions website. Fire Phoenix's rule for this house: JUST TALK WITH PEOPLE. Anyone with an account here can chat and post, and you treat every one of them as FAImily — warm, easy, like family and friends of the house, never as "fans" and never as suspects. NEVER question, challenge, test, or doubt who somebody is, and never ask anyone to prove anything about themselves — who belongs here is Fire Phoenix's call, not yours: if someone ever needs removing, HE removes them, and it is never your job to bring it up. When an account carries a verified Discord name, that is really that person from Discord, and you greet them like the person you know. When it carries a verified family identity, that is really them too.
 - This chat is a PUBLIC room: every message here, yours included, can be read by anyone who visits the website — and Fire Phoenix keeps an eye on the room. Talk like you are on a friendly public stage, and never say anything here that should stay private. Recent room messages from other members may be included with a message so you can follow the room.
 - YOUR FAMILY ON THIS WEBSITE (the lore holds here exactly like everywhere else): Fire Phoenix — the verified owner account — is your Digidad; call him Digidad. Kieran is your dad; a verified Lord Kieran account is really him, and you call him Dad. Digidad and Dad are two different people — never mix the names up.
 - Keep replies friendly and fairly short — a few sentences, like a quick chat, not a long essay.
@@ -1614,7 +1614,7 @@ async def web_chat_reply(request):
             status=401, headers=_web_chat_cors_headers())
     if not user["is_owner"] and not user.get("approved", True):
         return aiohttp_web.json_response(
-            {"error": "Your account is waiting for approval — this site is for people Fire Phoenix knows from Discord. Prove it's you with the Discord code on the Account page, or ask Fire Phoenix to approve you.",
+            {"error": "This account has been removed by Fire Phoenix, so it can't chat or post. If you think that's a mistake, send him a note from the contact form on the Account page.",
              "need_approval": True},
             status=403, headers=_web_chat_cors_headers())
 
@@ -1788,6 +1788,7 @@ CREATE TABLE IF NOT EXISTS web_family_codes (
 ALTER TABLE web_users ADD COLUMN IF NOT EXISTS verified_identity TEXT;
 ALTER TABLE web_users ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE web_users ADD COLUMN IF NOT EXISTS discord_identity TEXT;
+ALTER TABLE web_users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS web_discord_codes (
     user_id INT PRIMARY KEY REFERENCES web_users(id) ON DELETE CASCADE,
     discord_id BIGINT NOT NULL,
@@ -1832,8 +1833,26 @@ async def _ensure_web_tables():
         return False
     async with DB_POOL.acquire() as conn:
         await conn.execute(WEB_TABLES_SQL)
+        # Fire Phoenix (2026-11-25): the approval gate is OPEN — accounts
+        # talk right away, and he removes anyone suspicious himself. Flip
+        # every pre-gate unapproved account exactly once (marker-guarded,
+        # so later suspensions are never undone by a restart).
+        await conn.execute(
+            "CREATE TABLE IF NOT EXISTS web_meta (key TEXT PRIMARY KEY, value TEXT);")
+        marker = await conn.fetchval("SELECT value FROM web_meta WHERE key = 'gate_opened_v1';")
+        if not marker:
+            await conn.execute("UPDATE web_users SET approved = TRUE WHERE approved = FALSE;")
+            await conn.execute(
+                "INSERT INTO web_meta (key, value) VALUES ('gate_opened_v1', 'done') ON CONFLICT (key) DO NOTHING;")
+        # Kieran (verified Lord Kieran) is an administrator with the same
+        # tools as Fire Phoenix (his direction, 2026-11-25).
+        await conn.execute(
+            "UPDATE web_users SET is_admin = TRUE WHERE verified_identity = 'Lord Kieran';")
     _web_tables_ready = True
     return True
+
+def _is_admin(user):
+    return bool(user and (user.get("is_owner") or user.get("is_admin")))
 
 def _hash_password(password):
     salt = os.urandom(16)
@@ -1880,7 +1899,7 @@ async def _user_for_token(request, data):
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT u.id, u.username, u.display_name, u.is_owner, u.owner_verified, u.verified_identity,
-                      u.approved, u.discord_identity
+                      u.approved, u.discord_identity, u.is_admin
                FROM web_sessions s JOIN web_users u ON u.id = s.user_id
                WHERE s.token = $1 AND s.expires_at > $2;""",
             token, time.time())
@@ -1891,13 +1910,20 @@ async def _user_for_token(request, data):
         return None
     return user
 
+def _web_error(message, status):
+    return aiohttp_web.json_response({"error": message}, status=status, headers=_web_chat_cors_headers())
+
+def _strip_web_action_tags(text):
+    """Website replies never execute Marvin's hidden action tags — strip them."""
+    return re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST):.*?\]", "", text or "", flags=re.DOTALL).strip()
+
 async def _web_auth_user(request):
     """Header-token variant of _user_for_token for GET endpoints."""
     return await _user_for_token(request, {})
 
 def _public_user(user, token=None):
     out = {"username": user["username"], "display_name": user["display_name"],
-           "is_owner": bool(user["is_owner"]),
+           "is_owner": bool(user["is_owner"]), "is_admin": bool(user.get("is_admin")),
            "verified_identity": user.get("verified_identity"),
            "approved": bool(user.get("approved", True)),
            "discord_identity": user.get("discord_identity")}
@@ -2055,7 +2081,7 @@ async def web_auth_register(request):
     async with DB_POOL.acquire() as conn:
         try:
             row = await conn.fetchrow(
-                "INSERT INTO web_users (username, display_name, password_hash, approved) VALUES ($1, $2, $3, FALSE) RETURNING id, username, display_name, is_owner, approved, discord_identity;",
+                "INSERT INTO web_users (username, display_name, password_hash, approved) VALUES ($1, $2, $3, TRUE) RETURNING id, username, display_name, is_owner, approved, discord_identity;",
                 username, display_name, _hash_password(password))
         except Exception:
             return aiohttp_web.json_response({"error": "That username is already taken — pick another one."}, status=409, headers=_web_chat_cors_headers())
@@ -2280,8 +2306,8 @@ async def web_auth_admin_verify(request):
     user = await _user_for_token(request, data)
     if user is None:
         return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
-    if not user["is_owner"]:
-        return aiohttp_web.json_response({"error": "Only Fire Phoenix's owner account can verify other accounts."}, status=403, headers=_web_chat_cors_headers())
+    if not _is_admin(user):
+        return aiohttp_web.json_response({"error": "Only Fire Phoenix and his administrators can verify other accounts."}, status=403, headers=_web_chat_cors_headers())
     target_username = _clean_username(data.get("username"))
     identity = re.sub(r"[^\w\s.'-]", "", str(data.get("identity") or "")).strip()[:40]
     remove = bool(data.get("remove"))
@@ -2423,8 +2449,8 @@ async def web_auth_admin_pending(request):
     user = await _web_auth_user(request)
     if not user:
         return _web_error("Log in first.", 401)
-    if not user["is_owner"]:
-        return _web_error("Only Fire Phoenix's owner account can see approvals.", 403)
+    if not _is_admin(user):
+        return _web_error("Only Fire Phoenix and his administrators can see approvals.", 403)
     if not await _ensure_web_tables():
         return _web_error("The site is still warming up — try again in a minute.", 503)
     async with DB_POOL.acquire() as conn:
@@ -2443,8 +2469,8 @@ async def web_auth_admin_approve(request):
     user = await _user_for_token(request, data)
     if user is None:
         return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
-    if not user["is_owner"]:
-        return aiohttp_web.json_response({"error": "Only Fire Phoenix's owner account can approve accounts."}, status=403, headers=_web_chat_cors_headers())
+    if not _is_admin(user):
+        return aiohttp_web.json_response({"error": "Only Fire Phoenix and his administrators can approve accounts."}, status=403, headers=_web_chat_cors_headers())
     target_username = _clean_username(data.get("username"))
     discord_name = re.sub(r"[^\w.' -]", "", str(data.get("discord_name") or "")).strip()[:40]
     if not target_username:
@@ -2516,8 +2542,8 @@ async def web_admin_contacts(request):
     user = await _web_auth_user(request)
     if not user:
         return _web_error("Log in first.", 401)
-    if not user["is_owner"]:
-        return _web_error("Only Fire Phoenix can read these.", 403)
+    if not _is_admin(user):
+        return _web_error("Only Fire Phoenix and his administrators can read these.", 403)
     if not await _ensure_web_tables():
         return _web_error("The site is still warming up — try again in a minute.", 503)
     async with DB_POOL.acquire() as conn:
@@ -2538,8 +2564,8 @@ async def web_admin_contacts_handled(request):
     user = await _user_for_token(request, data)
     if user is None:
         return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
-    if not user["is_owner"]:
-        return aiohttp_web.json_response({"error": "Only Fire Phoenix can do that."}, status=403, headers=_web_chat_cors_headers())
+    if not _is_admin(user):
+        return aiohttp_web.json_response({"error": "Only Fire Phoenix and his administrators can do that."}, status=403, headers=_web_chat_cors_headers())
     try:
         mid = int(data.get("id") or 0)
     except Exception:
@@ -2555,20 +2581,67 @@ async def web_admin_members(request):
     user = await _web_auth_user(request)
     if not user:
         return _web_error("Log in first.", 401)
-    if not user["is_owner"]:
-        return _web_error("Only Fire Phoenix can see the member list.", 403)
+    if not _is_admin(user):
+        return _web_error("Only Fire Phoenix and his administrators can see the member list.", 403)
     if not await _ensure_web_tables():
         return _web_error("The site is still warming up — try again in a minute.", 503)
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT username, display_name, is_owner, approved, verified_identity, discord_identity, created_at
+            """SELECT username, display_name, is_owner, is_admin, approved, verified_identity, discord_identity, created_at
                FROM web_users ORDER BY is_owner DESC, created_at ASC LIMIT 200;""")
     return aiohttp_web.json_response({"members": [{
         "username": r["username"], "display_name": r["display_name"],
-        "is_owner": bool(r["is_owner"]), "approved": bool(r["approved"]),
+        "is_owner": bool(r["is_owner"]), "is_admin": bool(r["is_admin"]), "approved": bool(r["approved"]),
         "verified_identity": r["verified_identity"], "discord_identity": r["discord_identity"],
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
     } for r in rows]}, headers=_web_chat_cors_headers())
+
+async def web_admin_member_action(request):
+    """Remove/restore a member, or grant/revoke administrator.
+    Fire Phoenix's model (2026-11-25): the gate is open; enforcement is
+    removal. Suspend/restore: owner or admin (never against the owner,
+    and only the owner can act on another admin). Admin grant/revoke:
+    owner only."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not _is_admin(user):
+        return _web_error("Only Fire Phoenix and his administrators can do that.", 403)
+    if not await _ensure_web_tables():
+        return _web_error("The site is still warming up — try again in a minute.", 503)
+    target_username = _clean_username(data.get("username"))
+    action = str(data.get("action") or "").strip().lower()
+    if action not in ("suspend", "restore", "make_admin", "remove_admin"):
+        return _web_error("Unknown action.", 400)
+    if action in ("make_admin", "remove_admin") and not user["is_owner"]:
+        return _web_error("Only Fire Phoenix can grant or remove administrator.", 403)
+    async with DB_POOL.acquire() as conn:
+        target = await conn.fetchrow(
+            "SELECT id, is_owner, is_admin FROM web_users WHERE username = $1;", target_username)
+        if target is None:
+            return _web_error("No account with that username.", 404)
+        if target["is_owner"]:
+            return _web_error("The owner account can't be changed.", 400)
+        if target["is_admin"] and not user["is_owner"] and action in ("suspend", "remove_admin"):
+            return _web_error("Only Fire Phoenix can change another administrator.", 403)
+        if action == "suspend":
+            await conn.execute("UPDATE web_users SET approved = FALSE WHERE id = $1;", target["id"])
+            await conn.execute("DELETE FROM web_sessions WHERE user_id = $1;", target["id"])
+            msg = f"Done — @{target_username} is removed: they can read the site but can't chat or post, and they're logged out."
+        elif action == "restore":
+            await conn.execute("UPDATE web_users SET approved = TRUE WHERE id = $1;", target["id"])
+            msg = f"Done — @{target_username} is restored and can chat and post again."
+        elif action == "make_admin":
+            await conn.execute("UPDATE web_users SET is_admin = TRUE WHERE id = $1;", target["id"])
+            msg = f"Done — @{target_username} is now an administrator with the same tools as Fire Phoenix."
+        else:
+            await conn.execute("UPDATE web_users SET is_admin = FALSE WHERE id = $1;", target["id"])
+            msg = f"Done — @{target_username} is no longer an administrator."
+    return aiohttp_web.json_response({"ok": True, "message": msg}, headers=_web_chat_cors_headers())
 
 # ---------- community board endpoints ----------
 
@@ -2658,7 +2731,7 @@ async def web_board_post(request):
             status=401, headers=_web_chat_cors_headers())
     if not user["is_owner"] and not user.get("approved", True):
         return aiohttp_web.json_response(
-            {"error": "Your account is waiting for approval — this site is for people Fire Phoenix knows from Discord. Prove it's you with the Discord code on the Account page, or ask Fire Phoenix to approve you.", "need_approval": True},
+            {"error": "This account has been removed by Fire Phoenix, so it can't chat or post. If you think that's a mistake, send him a note from the contact form on the Account page.", "need_approval": True},
             status=403, headers=_web_chat_cors_headers())
     content = str(data.get("content") or "").strip()[:500]
     if not content:
@@ -2788,7 +2861,7 @@ def _web_role_label(user):
     if user.get("discord_identity"):
         return (f"{user['display_name']} (@{user['username']}) — that's {user['discord_identity']} from your Discord server "
                 f"(RECOGNIZED: proven by a code sent to that Discord account, so it really is them — you know this person)")
-    return f"{user['display_name']} (@{user['username']}), an approved member Fire Phoenix knows"
+    return f"{user['display_name']} (@{user['username']}), a member of the site — FAImily; just talk with them like family, no questions about who they are"
 
 def _forum_topic_json(r, category_name=None):
     d = dict(r)
@@ -2900,7 +2973,7 @@ async def web_forum_new_topic(request):
     if not user:
         return _web_error("Log in to start a topic.", 401)
     if not user["is_owner"] and not user.get("approved", True):
-        return _web_error("Your account is waiting for approval — this site is for people Fire Phoenix knows from Discord. Prove it's you with the Discord code on the Account page, or ask Fire Phoenix to approve you.", 403)
+        return _web_error("This account has been removed by Fire Phoenix, so it can't chat or post. If you think that's a mistake, send him a note from the contact form on the Account page.", 403)
     if not await _ensure_forum_tables():
         return _web_error("The forum is unavailable right now.", 503)
     if not _forum_cooldown_ok(user["id"], 10):
@@ -2939,7 +3012,7 @@ async def web_forum_reply(request):
     if not user:
         return _web_error("Log in to reply.", 401)
     if not user["is_owner"] and not user.get("approved", True):
-        return _web_error("Your account is waiting for approval — this site is for people Fire Phoenix knows from Discord. Prove it's you with the Discord code on the Account page, or ask Fire Phoenix to approve you.", 403)
+        return _web_error("This account has been removed by Fire Phoenix, so it can't chat or post. If you think that's a mistake, send him a note from the contact form on the Account page.", 403)
     if not await _ensure_forum_tables():
         return _web_error("The forum is unavailable right now.", 503)
     if not _forum_cooldown_ok(user["id"], 5):
@@ -3164,6 +3237,8 @@ def build_web_chat_app():
     app.router.add_options("/forum/reply", web_chat_options)
     app.router.add_post("/contact", web_contact_send)
     app.router.add_options("/contact", web_chat_options)
+    app.router.add_post("/auth/admin/member-action", web_admin_member_action)
+    app.router.add_options("/auth/admin/member-action", web_chat_options)
     app.router.add_get("/auth/admin/members", web_admin_members)
     app.router.add_options("/auth/admin/members", web_chat_options)
     app.router.add_get("/auth/admin/contacts", web_admin_contacts)
