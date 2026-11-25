@@ -1,4 +1,5 @@
 discord.py
+aiohttp
 google-genai
 asyncpg
 voyageai
