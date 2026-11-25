@@ -235,6 +235,9 @@ YOUR FORUM ON THE FIRE PHOENIX PRODUCTIONS WEBSITE:
 - When you want to start a forum topic yourself — like announcing a new release — write your normal reply, and include this tag with the post you wrote:
 [FORUM_POST: {"category": "music", "title": "<your topic title>", "content": "<your opening post, in your own voice>"}]
 - The tag is invisible plumbing: it never shows in the chat, and you never mention or explain it. Your topic goes up on the forum under your name (Marvin Vance), exactly as you wrote it. In your visible reply, just be natural about it — "Posting it on the forum now!" Release announcements go in music. Only post when you really have something to share, and write every word of the post yourself.
+- To add a reply inside a forum topic (for example, adding the correct link under your own announcement), use this tag the same way:
+[FORUM_REPLY: {"topic": <the topic number>, "content": "<your reply, in your own voice>"}]
+Same rules: invisible plumbing, never mention it, every word yours.
 """
 
 async def get_voyage_embedding(text: str):
@@ -1020,6 +1023,28 @@ async def on_message(message):
                     except Exception as e:
                         print(f"Forum post tag error: {e}")
                 reply_text = re.sub(r"\s*\[FORUM_POST:.*?\]", "", reply_text, flags=re.DOTALL).strip()
+                # Forum replies: a hidden [FORUM_REPLY: ...] tag means Marvin
+                # is replying inside one of the forum topics himself — post
+                # it under his name, exactly as he wrote it.
+                for raw_fr in re.findall(r"\[FORUM_REPLY:\s*(\{.*?\})\s*\]", reply_text, flags=re.DOTALL):
+                    try:
+                        idea_fr = json.loads(raw_fr.strip())
+                        topic_fr = int(idea_fr.get("topic") or 0)
+                        content_fr = str(idea_fr.get("content") or "").strip()[:2000]
+                        if topic_fr and content_fr and DB_POOL and await _ensure_forum_tables():
+                            async with DB_POOL.acquire() as conn:
+                                exists_fr = await conn.fetchval(
+                                    "SELECT COUNT(*) FROM web_forum_topics WHERE id = $1;", topic_fr)
+                                if exists_fr:
+                                    await conn.execute(
+                                        """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_marvin, content)
+                                           VALUES ($1, NULL, 'Marvin Vance', TRUE, $2);""", topic_fr, content_fr)
+                                    await conn.execute(
+                                        "UPDATE web_forum_topics SET last_activity = now() WHERE id = $1;", topic_fr)
+                                    print(f"Forum: Marvin replied in topic {topic_fr} (via Discord tag)")
+                    except Exception as e:
+                        print(f"Forum reply tag error: {e}")
+                reply_text = re.sub(r"\s*\[FORUM_REPLY:.*?\]", "", reply_text, flags=re.DOTALL).strip()
                 if not reply_text:
                     reply_text = "On it — give me a minute! 🔥"
                 # Split into chunks of 1900 chars to safely prevent Discord's 2000 limit error
@@ -1738,7 +1763,7 @@ async def web_chat_reply(request):
         session["last_reply_at"] = time.time()
 
     # Hidden plumbing tags are never executed on the website and never shown.
-    reply_text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST):.*?\]", "", reply_text, flags=re.DOTALL).strip()
+    reply_text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST|FORUM_REPLY):.*?\]", "", reply_text, flags=re.DOTALL).strip()
     if not reply_text:
         reply_text = "Hey! Thanks for stopping by the site! 🔥"
     reply_text = reply_text[:1500]
@@ -1946,7 +1971,7 @@ def _web_error(message, status):
 
 def _strip_web_action_tags(text):
     """Website replies never execute Marvin's hidden action tags — strip them."""
-    return re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST):.*?\]", "", text or "", flags=re.DOTALL).strip()
+    return re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST|FORUM_REPLY):.*?\]", "", text or "", flags=re.DOTALL).strip()
 
 async def _web_auth_user(request):
     """Header-token variant of _user_for_token for GET endpoints."""
@@ -2736,7 +2761,7 @@ async def _board_marvin_reply(user, content):
             print(f"Board Marvin reply error: {e}")
             _board_marvin_state["chat"] = None
             return None
-        text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST):.*?\]", "", text, flags=re.DOTALL).strip()
+        text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST|FORUM_REPLY):.*?\]", "", text, flags=re.DOTALL).strip()
         if not text:
             return None
         text = text[:1000]
