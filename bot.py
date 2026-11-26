@@ -2704,8 +2704,8 @@ async def web_me_activity(request):
                 "m.content ILIKE ${} ESCAPE '\\'".format(i + 3)
                 for i in range(len(pats)))
             mentions = await conn.fetch(
-                """SELECT m.room, m.author_name, m.content, m.created_at
-                   FROM web_chat_messages m
+                """SELECT m.room, u.display_name AS author_name, m.content, m.created_at
+                   FROM web_chat_messages m JOIN web_users u ON u.id = m.user_id
                    WHERE m.user_id IS DISTINCT FROM $1
                      AND ($2::timestamptz IS NULL OR m.created_at > $2)
                      AND ({})
