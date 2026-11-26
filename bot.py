@@ -2558,7 +2558,7 @@ async def web_auth_register(request):
     async with DB_POOL.acquire() as conn:
         try:
             row = await conn.fetchrow(
-                "INSERT INTO web_users (username, display_name, password_hash, approved) VALUES ($1, $2, $3, TRUE) RETURNING id, username, display_name, is_owner, approved, discord_identity;",
+                "INSERT INTO web_users (username, display_name, password_hash, approved) VALUES ($1, $2, $3, TRUE) RETURNING id, username, display_name, is_owner, approved, discord_identity, avatar, about_me, welcomed;",
                 username, display_name, _hash_password(password))
         except Exception:
             return aiohttp_web.json_response({"error": "That username is already taken — pick another one."}, status=409, headers=_web_chat_cors_headers())
@@ -2578,7 +2578,7 @@ async def web_auth_login(request):
     password = str(data.get("password") or "")
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, username, display_name, password_hash, is_owner, owner_verified, verified_identity FROM web_users WHERE username = $1;",
+            "SELECT id, username, display_name, password_hash, is_owner, owner_verified, verified_identity, approved, discord_identity, avatar, about_me, welcomed FROM web_users WHERE username = $1;",
             username)
     if row is None or not _check_password(password, row["password_hash"]):
         return aiohttp_web.json_response({"error": "That username and password do not match."}, status=401, headers=_web_chat_cors_headers())
@@ -2682,7 +2682,7 @@ async def web_me_activity(request):
                ORDER BY p.created_at DESC LIMIT 15""",
             user["id"], seen)
         topics = await conn.fetch(
-            """SELECT id, title, author_name, category, created_at
+            """SELECT id, title, author_name, category_slug AS category, created_at
                FROM web_forum_topics
                WHERE author_id IS DISTINCT FROM $1
                  AND ($2::timestamptz IS NULL OR created_at > $2)
