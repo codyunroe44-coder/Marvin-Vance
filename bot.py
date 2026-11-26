@@ -306,52 +306,6 @@ async def on_ready():
     print(f'Marvin Vance is online as {bot.user}')
     if not room_quiet_timer.is_running():
         room_quiet_timer.start()
-    bot.loop.create_task(_exit_guild_once())
-
-# ---------------------------------------------------------
-# ONE-TIME SERVER EXIT (Fire Phoenix, 2026-11-25)
-# Fire Phoenix directed that Marvin be removed entirely from the
-# server below: Phoenix is not a member there and Fire Phoenix has
-# no kick rights in it, so the bot does it from its own side — it
-# deletes its own messages in that server, then leaves. One-time:
-# once Marvin is out, bot.get_guild() returns None and this never
-# acts again. Remove this block once the exit is confirmed.
-# ---------------------------------------------------------
-EXIT_GUILD_ID = 1502674163687624885
-_exit_done = False
-
-async def _exit_guild_once():
-    global _exit_done
-    if _exit_done:
-        return
-    _exit_done = True
-    try:
-        guild = bot.get_guild(EXIT_GUILD_ID)
-        if not guild:
-            return
-        guild_name = guild.name
-        deleted = 0
-        channels_done = 0
-        for channel in guild.text_channels:
-            try:
-                perms = channel.permissions_for(guild.me)
-                if not (perms.view_channel and perms.read_message_history):
-                    continue
-                async for msg in channel.history(limit=None):
-                    if msg.author.id == bot.user.id:
-                        try:
-                            await msg.delete()
-                            deleted += 1
-                            await asyncio.sleep(0.6)
-                        except Exception:
-                            pass
-                channels_done += 1
-            except Exception as e:
-                print(f"Exit cleanup error in #{getattr(channel, 'name', '?')}: {e}")
-        await log_activity(f"🚪 Marvin Vance left the server \"{guild_name}\" (ID {EXIT_GUILD_ID}) at Fire Phoenix's direction — he deleted {deleted} of his own messages across {channels_done} channels first. · {_now_et()}")
-        await guild.leave()
-    except Exception as e:
-        print(f"Exit guild error: {e}")
 
 # ---------------------------------------------------------
 # BACKGROUND TASK: QUIET TIMER (AUTO-SHUTOFF AFTER 10 MINS)
