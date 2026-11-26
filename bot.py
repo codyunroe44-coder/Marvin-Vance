@@ -2701,7 +2701,7 @@ async def web_admin_member_action(request):
         return _web_error("The site is still warming up — try again in a minute.", 503)
     target_username = _clean_username(data.get("username"))
     action = str(data.get("action") or "").strip().lower()
-    if action not in ("suspend", "restore", "make_admin", "remove_admin"):
+    if action not in ("suspend", "restore", "make_admin", "remove_admin", "reset_password"):
         return _web_error("Unknown action.", 400)
     if action in ("make_admin", "remove_admin") and not user["is_owner"]:
         return _web_error("Only Fire Phoenix can grant or remove administrator.", 403)
@@ -2712,9 +2712,17 @@ async def web_admin_member_action(request):
             return _web_error("No account with that username.", 404)
         if target["is_owner"]:
             return _web_error("The owner account can't be changed.", 400)
-        if target["is_admin"] and not user["is_owner"] and action in ("suspend", "remove_admin"):
+        if target["is_admin"] and not user["is_owner"] and action in ("suspend", "remove_admin", "reset_password"):
             return _web_error("Only Fire Phoenix can change another administrator.", 403)
-        if action == "suspend":
+        if action == "reset_password":
+            new_password = str(data.get("new_password") or "")
+            if len(new_password) < 8:
+                return _web_error("The new password needs at least 8 characters.", 400)
+            await conn.execute("UPDATE web_users SET password_hash = $2 WHERE id = $1;",
+                               target["id"], _hash_password(new_password))
+            await conn.execute("DELETE FROM web_sessions WHERE user_id = $1;", target["id"])
+            msg = f"Done — @{target_username}'s password has been reset. They're logged out everywhere; give them the new password privately."
+        elif action == "suspend":
             await conn.execute("UPDATE web_users SET approved = FALSE WHERE id = $1;", target["id"])
             await conn.execute("DELETE FROM web_sessions WHERE user_id = $1;", target["id"])
             msg = f"Done — @{target_username} is removed: they can read the site but can't chat or post, and they're logged out."
@@ -2727,6 +2735,79 @@ async def web_admin_member_action(request):
         else:
             await conn.execute("UPDATE web_users SET is_admin = FALSE WHERE id = $1;", target["id"])
             msg = f"Done — @{target_username} is no longer an administrator."
+    return aiohttp_web.json_response({"ok": True, "message": msg}, headers=_web_chat_cors_headers())
+
+async def web_admin_topic_action(request):
+    """Owner/admin forum cleanup (Fire Phoenix approved 2026-11-26):
+    delete a topic (with all its posts), or pin/unpin it."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not _is_admin(user):
+        return _web_error("Only Fire Phoenix and his administrators can do that.", 403)
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is still warming up — try again in a minute.", 503)
+    try:
+        topic_id = int(data.get("topic_id") or 0)
+    except Exception:
+        topic_id = 0
+    action = str(data.get("action") or "").strip().lower()
+    if action not in ("delete", "pin", "unpin"):
+        return _web_error("Unknown action.", 400)
+    async with DB_POOL.acquire() as conn:
+        topic = await conn.fetchrow("SELECT id, title FROM web_forum_topics WHERE id = $1;", topic_id)
+        if topic is None:
+            return _web_error("That topic doesn't exist.", 404)
+        if action == "delete":
+            await conn.execute("DELETE FROM web_forum_posts WHERE topic_id = $1;", topic_id)
+            await conn.execute("DELETE FROM web_forum_topics WHERE id = $1;", topic_id)
+            msg = f"Done — the topic \"{topic['title']}\" and all its replies are deleted."
+        elif action == "pin":
+            await conn.execute("UPDATE web_forum_topics SET pinned = TRUE WHERE id = $1;", topic_id)
+            msg = f"Done — \"{topic['title']}\" is pinned to the top of its category."
+        else:
+            await conn.execute("UPDATE web_forum_topics SET pinned = FALSE WHERE id = $1;", topic_id)
+            msg = f"Done — \"{topic['title']}\" is unpinned."
+    return aiohttp_web.json_response({"ok": True, "message": msg}, headers=_web_chat_cors_headers())
+
+async def web_admin_post_action(request):
+    """Owner/admin forum cleanup: delete one post. Deleting a topic's
+    opening post deletes the whole topic (a thread can't start mid-air)."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return aiohttp_web.json_response({"error": "Log in first.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    if not _is_admin(user):
+        return _web_error("Only Fire Phoenix and his administrators can do that.", 403)
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is still warming up — try again in a minute.", 503)
+    try:
+        post_id = int(data.get("post_id") or 0)
+    except Exception:
+        post_id = 0
+    action = str(data.get("action") or "").strip().lower()
+    if action != "delete":
+        return _web_error("Unknown action.", 400)
+    async with DB_POOL.acquire() as conn:
+        post = await conn.fetchrow("SELECT id, topic_id FROM web_forum_posts WHERE id = $1;", post_id)
+        if post is None:
+            return _web_error("That post doesn't exist.", 404)
+        first_id = await conn.fetchval(
+            "SELECT MIN(id) FROM web_forum_posts WHERE topic_id = $1;", post["topic_id"])
+        if post_id == first_id:
+            await conn.execute("DELETE FROM web_forum_posts WHERE topic_id = $1;", post["topic_id"])
+            await conn.execute("DELETE FROM web_forum_topics WHERE id = $1;", post["topic_id"])
+            msg = "Done — that was the opening post, so the whole topic is deleted."
+        else:
+            await conn.execute("DELETE FROM web_forum_posts WHERE id = $1;", post_id)
+            msg = "Done — that post is deleted."
     return aiohttp_web.json_response({"ok": True, "message": msg}, headers=_web_chat_cors_headers())
 
 # ---------- community board endpoints ----------
@@ -2898,6 +2979,7 @@ async def _ensure_forum_tables():
         return False
     async with DB_POOL.acquire() as conn:
         await conn.execute(FORUM_TABLES_SQL)
+        await conn.execute("ALTER TABLE web_forum_topics ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;")
         version = await conn.fetchval("SELECT value FROM web_forum_meta WHERE key = 'seed_version';")
         if version != FORUM_SEED_VERSION:
             for i, (slug, name, desc) in enumerate(FORUM_SEED):
@@ -2954,6 +3036,7 @@ def _forum_topic_json(r, category_name=None):
     return {
         "id": d["id"], "title": d["title"], "author": d["author_name"],
         "is_owner": bool(d["is_owner"]), "verified_identity": d["verified_identity"],
+        "pinned": bool(d.get("pinned")),
         "category_slug": d["category_slug"],
         "category_name": category_name if category_name is not None else d.get("category_name"),
         "replies": int(d["post_count"]) - 1 if d.get("post_count") is not None else 0,
@@ -2993,7 +3076,7 @@ async def web_forum_topics(request):
         rows = await conn.fetch(
             """SELECT t.*, (SELECT COUNT(*) FROM web_forum_posts p WHERE p.topic_id = t.id) AS post_count
                FROM web_forum_topics t WHERE t.category_slug = $1
-               ORDER BY t.last_activity DESC LIMIT 100;""", slug)
+               ORDER BY t.pinned DESC, t.last_activity DESC LIMIT 100;""", slug)
     return aiohttp_web.json_response(
         {"category": {"slug": slug, "name": cat["name"]},
          "topics": [_forum_topic_json(r, cat["name"]) for r in rows]},
@@ -3325,6 +3408,10 @@ def build_web_chat_app():
     app.router.add_options("/contact", web_chat_options)
     app.router.add_post("/auth/admin/member-action", web_admin_member_action)
     app.router.add_options("/auth/admin/member-action", web_chat_options)
+    app.router.add_post("/auth/admin/topic-action", web_admin_topic_action)
+    app.router.add_options("/auth/admin/topic-action", web_chat_options)
+    app.router.add_post("/auth/admin/post-action", web_admin_post_action)
+    app.router.add_options("/auth/admin/post-action", web_chat_options)
     app.router.add_get("/auth/admin/members", web_admin_members)
     app.router.add_options("/auth/admin/members", web_chat_options)
     app.router.add_get("/auth/admin/contacts", web_admin_contacts)
