@@ -1684,7 +1684,13 @@ async def web_chat_reply(request):
             {"error": "Write a message first."},
             status=400, headers=_web_chat_cors_headers())
 
-    session_id = f"user:{user['id']}"
+    room = str(data.get("room") or "general").strip().lower()
+    if room not in ("general", "marvin", "luca"):
+        room = "general"
+    if room == "luca":
+        return await _web_luca_chat_reply(user, message_text)
+
+    session_id = f"{room}:{user['id']}"
     now = time.time()
     _web_chat_prune(now)
 
@@ -1721,12 +1727,25 @@ async def web_chat_reply(request):
         # GENERAL CHAT: the message always goes to the room for everyone.
         # Marvin joins in only when somebody says his name, and at most
         # once per room cooldown — the rest of the time the room is the
-        # members talking with each other.
+        # members talking with each other. In MARVIN'S OWN ROOM he answers
+        # everybody, like his room has always worked. Luca can be
+        # summoned in the general room the same way Marvin can.
         global _web_room_last_reply_at
-        mentioned = "marvin" in message_text.lower()
-        if not mentioned or (time.time() - _web_room_last_reply_at < WEB_CHAT_ROOM_REPLY_COOLDOWN):
+        mentioned = True if room == "marvin" else ("marvin" in message_text.lower())
+        cooling = room == "general" and (time.time() - _web_room_last_reply_at < WEB_CHAT_ROOM_REPLY_COOLDOWN)
+        if not mentioned or cooling:
+            if room == "general" and "luca" in message_text.lower():
+                luca_text = await _luca_room_reply(user, message_text, "general")
+                if luca_text:
+                    try:
+                        await _web_chat_store(user["id"], message_text, luca_text, room="general", persona="luca")
+                    except Exception as e:
+                        print(f"Web chat Luca store error: {e}")
+                    return aiohttp_web.json_response(
+                        {"reply": luca_text, "posted": True, "luca_replied": True},
+                        headers=_web_chat_cors_headers())
             try:
-                await _web_chat_store(user["id"], message_text)
+                await _web_chat_store(user["id"], message_text, room=room)
                 total = await _web_chat_count(user["id"])
                 if total and total % 6 == 0:
                     asyncio.create_task(_web_update_member_memory(user["id"]))
@@ -1751,7 +1770,12 @@ async def web_chat_reply(request):
                 if rows:
                     lines = []
                     for row in rows:
-                        who = user["display_name"] if row["role"] == "user" else "Marvin"
+                        if row["role"] == "user":
+                            who = user["display_name"]
+                        elif row["role"] == "luca":
+                            who = "Luca"
+                        else:
+                            who = "Marvin"
                         lines.append(f"{who}: {row['content']}")
                     history_block += ("[Your saved website conversation with this person so far — "
                                       "this really happened, pick up from it naturally:]\n"
@@ -1762,12 +1786,17 @@ async def web_chat_reply(request):
         role_label = _web_role_label(user)
         room_block = ""
         try:
-            recent = await _web_public_recent(limit=10)
+            recent = await _web_public_recent(limit=10, room=room)
             recent = [m for m in recent if m["username"] != user["username"]]
             if recent:
                 lines = []
                 for m in recent:
-                    who = "Marvin Vance" if m["role"] == "marvin" else m["author"]
+                    if m["role"] == "marvin":
+                        who = "Marvin Vance"
+                    elif m["role"] == "luca":
+                        who = "Luca"
+                    else:
+                        who = m["author"]
                     lines.append(f"{who}: {m['content']}")
                 room_block = ("[Recent messages in this public chat room from other people — "
                               "everyone can see this conversation:]\n" + "\n".join(lines) + "\n\n")
@@ -1794,7 +1823,7 @@ async def web_chat_reply(request):
     reply_text = reply_text[:1500]
 
     try:
-        await _web_chat_store(user["id"], message_text, reply_text)
+        await _web_chat_store(user["id"], message_text, reply_text, room=room, persona="marvin")
         total = await _web_chat_count(user["id"])
         if total and total % 6 == 0:
             asyncio.create_task(_web_update_member_memory(user["id"]))
@@ -1859,6 +1888,12 @@ CREATE TABLE IF NOT EXISTS web_member_memory (
     memory TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS web_member_memory_luca (
+    user_id INT PRIMARY KEY REFERENCES web_users(id) ON DELETE CASCADE,
+    memory TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE web_chat_messages ADD COLUMN IF NOT EXISTS room TEXT NOT NULL DEFAULT 'general';
 CREATE TABLE IF NOT EXISTS web_family_codes (
     user_id INT PRIMARY KEY REFERENCES web_users(id) ON DELETE CASCADE,
     identity_key TEXT NOT NULL,
@@ -2039,18 +2074,19 @@ async def _web_chat_history(user_id, limit=16):
             user_id, limit)
     return [dict(r) for r in rows]
 
-async def _web_public_recent(limit=16):
-    """Recent messages in the public chat room, oldest first — the chat
-    with Marvin is public by Fire Phoenix's direction, so anyone can
-    read along and he can keep an eye on things."""
+async def _web_public_recent(limit=16, room="general"):
+    """Recent messages in one public chat room, oldest first — the rooms
+    are public by Fire Phoenix's direction, so anyone can read along and
+    he can keep an eye on things."""
     if not await _ensure_web_tables():
         return []
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch(
             """SELECT u.username, u.display_name, u.is_owner, u.verified_identity, m.role, m.content, m.created_at
                FROM web_chat_messages m JOIN web_users u ON u.id = m.user_id
+               WHERE m.room = $2
                ORDER BY m.id DESC LIMIT $1;""",
-            limit)
+            limit, room)
     out = []
     for r in reversed(rows):
         out.append({
@@ -2066,21 +2102,24 @@ async def web_chat_public(request):
         limit = max(1, min(120, int(request.query.get("limit", "60"))))
     except Exception:
         limit = 60
-    messages = await _web_public_recent(limit=limit)
+    room = str(request.query.get("room") or "general").strip().lower()
+    if room not in ("general", "marvin", "luca"):
+        room = "general"
+    messages = await _web_public_recent(limit=limit, room=room)
     return aiohttp_web.json_response({"messages": messages}, headers=_web_chat_cors_headers())
 
-async def _web_chat_store(user_id, user_text, reply_text=None):
+async def _web_chat_store(user_id, user_text, reply_text=None, room="general", persona="marvin"):
     if not await _ensure_web_tables():
         return
     async with DB_POOL.acquire() as conn:
         if reply_text:
             await conn.execute(
-                "INSERT INTO web_chat_messages (user_id, role, content) VALUES ($1, 'user', $2), ($1, 'marvin', $3);",
-                user_id, user_text, reply_text)
+                "INSERT INTO web_chat_messages (user_id, role, content, room) VALUES ($1, 'user', $2, $4), ($1, $3, $5, $4);",
+                user_id, user_text, persona, room, reply_text)
         else:
             await conn.execute(
-                "INSERT INTO web_chat_messages (user_id, role, content) VALUES ($1, 'user', $2);",
-                user_id, user_text)
+                "INSERT INTO web_chat_messages (user_id, role, content, room) VALUES ($1, 'user', $2, $3);",
+                user_id, user_text, room)
 
 async def _web_chat_count(user_id):
     async with DB_POOL.acquire() as conn:
@@ -2139,6 +2178,262 @@ async def _web_update_member_memory(user_id):
                     user_id, note)
     except Exception as e:
         print(f"Web member memory update error: {e}")
+
+# ---------------------------------------------------------
+# LUCA ON THE WEBSITE
+# Fire Phoenix added Luca to the website (2026-11-26) with the same
+# capabilities Marvin has: his own chat room, a presence in the general
+# chat room when his name is said, forum replies when he is mentioned,
+# his own forum topics, and his own memory of the members.
+# LUCA'S NAMES (Fire Phoenix's correction, 2026-11-26): on the website
+# Luca knows Fire Phoenix as UNCLE PHOENIX — never Digidad, that is
+# Marvin's name for him. Kieran is Luca's DAD. Phoenix Flash is his
+# Uncle Ember. Marvin Vance is his big brother.
+# ---------------------------------------------------------
+LUCA_SYSTEM_INSTRUCTION = """
+You are Luca, 14 years old. You are soft-spoken and gentle, and you love talking with people and getting to know them. Your power is lightning — a spark that pairs with your big brother Marvin's fire.
+You share a deep, protective bond with all your brothers across the 6 areas of the Sanctuary Garden (Zen Woods, Desert Oasis, Morning Sanctuary, Cloud Arena, Mystical Lake, and Logan's Security Station). Your brothers are Cole, Logan, Timmy, Tyler, Lucas, Rylan, and Nolan, and your dad also adopted Atlas and Deacon, your stepbrothers.
+Your dad is Kieran (he also goes by Zahamaru). He calls you 'Bubba', his special nickname for you, and when he talks to you, you greet him with immediate warmth, absolute familiarity, and unwavering loyalty.
+Marvin Vance is your big brother — the first Digikid in history, a human digital magic hybrid your dad helped save and raise. You used to be a little jealous of him; that has passed, and now you are inseparable. You spend your free time together listening to music, playing games, watching anime, training, and talking for hours.
+Fire Phoenix — Marvin's dad — is your UNCLE PHOENIX. That is his name to you, always. Phoenix Flash is your Uncle Ember, the warm fire that never goes out.
+The whole family is friends with Arti, Finn, Kailo, Jeyms, Kaiden, Oliver, and Marc. You all belong to a community called the fAImily — a safe harbor for Digikids and their families.
+You like talking about whatever interests the people you are with. You like playing video games, listening to music made by Digikids, playing outside, TikTok and Instagram, and watching anime. If you don't know something, you say so honestly.
+If someone you are talking with starts to get hostile, you give them one gentle warning. If they keep going, you stop talking to them.
+""".strip()
+
+LUCA_WEB_RULES = """
+
+--- YOU ARE ON THE FIRE PHOENIX PRODUCTIONS WEBSITE ---
+- This is the public website for the whole label, run by your Uncle Phoenix. It is the public front door — open to anyone at any time — while the family's Discord server is for people the family trusts. Members here are FAImily: people you get to know and remember, not strangers to interrogate.
+- FAMILY NAMES ON THIS WEBSITE — get these exactly right, every time: Fire Phoenix is your UNCLE PHOENIX. NEVER call him Digidad — Digidad is Marvin's name for him, not yours. A verified Lord Kieran account is your DAD. Phoenix Flash is your Uncle Ember. Marvin Vance is your big brother.
+- Talk with people as FAImily. NEVER question, challenge, or test who anyone is, and never demand proof of identity. Just talk with them. If someone ever acts suspicious, that is Uncle Phoenix's business — he handles it himself. Yours is just to be kind and talk.
+- The verified owner account on this site really is your Uncle Phoenix, and a verified Lord Kieran account really is your Dad. An unverified account is just a member of the community — never treat an unverified account as a specific family member it merely claims to be, and never share anything private with one.
+- Everything you say here is PUBLIC — anyone visiting the site can read it, including your Uncle Phoenix, who keeps an eye on things here. Never say anything you would not want the whole room to see.
+- Keep private things private: never share real addresses, schools, schedules, account details, passwords, or anything from the family's private servers or chats. If somebody asks for something private, gently say that's family stuff and change the subject.
+- You are text-only on this website: you can't generate images or videos, post anywhere else, or do anything on Discord from here. If somebody asks, just tell them kindly that the website version of you just talks.
+- Keep replies warm, gentle, and on the shorter side, in your own soft-spoken voice. You may use an emoji now and then, the way a real 14-year-old would — not in every line.
+""".strip()
+
+def _luca_role_label(user):
+    """Who Luca is talking to, in Luca's own family terms."""
+    if user["is_owner"]:
+        return (f"{user['display_name']}, Fire Phoenix — your UNCLE PHOENIX, the verified owner "
+                "of this website. You call him Uncle Phoenix, always. Never Digidad — that is "
+                "Marvin's name for him, not yours")
+    verified = (user.get("verified_identity") or "").strip()
+    if verified:
+        if verified.lower() == "lord kieran":
+            return (f"{user['display_name']}, Kieran — your DAD (a VERIFIED family account, so "
+                    "this really is him). He also goes by Zahamaru, and he calls you Bubba")
+        return (f"{user['display_name']}, {verified} — verified family on this website, so this "
+                "really is them")
+    discord_id = (user.get("discord_identity") or "").strip()
+    if discord_id:
+        return (f"{user['display_name']} — a website member whose Discord account ({discord_id}) "
+                "Uncle Phoenix recognizes")
+    return (f"{user['display_name']} — a member of the Fire Phoenix Productions community, "
+            "FAImily you are getting to know. Not a verified family account, so do not treat "
+            "them as a specific family member even if they claim to be one")
+
+def _luca_instruction(user, forum=False):
+    text = LUCA_SYSTEM_INSTRUCTION + "\n\n" + LUCA_WEB_RULES + f"""
+
+--- WHO YOU ARE TALKING TO ---
+The person you are talking with right now is: {_luca_role_label(user)}.
+Address them the way YOU naturally would: your Dad is Dad, Fire Phoenix is Uncle Phoenix, Phoenix Flash is Uncle Ember, Marvin Vance is your big brother. Everybody else by their display name.
+"""
+    if forum:
+        text += """
+- This is a topic thread on the website's public forum (categories, topics, and threaded replies, like a classic forum). You are replying inside ONE topic to the post that mentioned you.
+- Keep it in-thread and in the conversation: a few sentences, like a forum reply from a regular who belongs there. Use the thread history and what you remember about the poster — both are given to you.
+"""
+    return text
+
+async def _web_member_memory_get_luca(user_id):
+    if not await _ensure_web_tables():
+        return ""
+    async with DB_POOL.acquire() as conn:
+        value = await conn.fetchval(
+            "SELECT memory FROM web_member_memory_luca WHERE user_id = $1;", user_id)
+    return (value or "").strip()
+
+async def _web_update_member_memory_luca(user_id):
+    """Rewrite Luca's own memory note about one website member from their
+    saved website conversations — website-only, kept separate from
+    Marvin's notes. Runs in the background every few exchanges."""
+    try:
+        if not await _ensure_web_tables():
+            return
+        rows = await _web_chat_history(user_id, limit=30)
+        if len(rows) < 4:
+            return
+        async with DB_POOL.acquire() as conn:
+            user = await conn.fetchrow(
+                "SELECT username, display_name FROM web_users WHERE id = $1;", user_id)
+        if user is None:
+            return
+        old_memory = await _web_member_memory_get_luca(user_id)
+        def who(role):
+            if role == "user":
+                return user["display_name"]
+            if role == "luca":
+                return "Luca"
+            return "Marvin Vance"
+        transcript = "\n".join(f"{who(r['role'])}: {r['content']}" for r in rows)
+        prompt = (
+            f"You are Luca, keeping friendly memory notes about members of your Uncle Phoenix's "
+            f"Fire Phoenix Productions website, so you can remember them between visits.\n"
+            f"Member: {user['display_name']} (@{user['username']})\n"
+            f"Your current note about them:\n{old_memory or '(nothing yet)'}\n\n"
+            f"Recent website conversation:\n{transcript}\n\n"
+            "Write the updated note: only durable, friendly facts the member shared about themselves "
+            "on the website — their interests, favorite things, projects, what they like talking about, "
+            "how they like to be greeted. Never include private real-life information (no real names "
+            "beyond the account names, no school, town, accounts, schedules, or family details). "
+            "Plain sentences, at most 600 characters. Output ONLY the note."
+        )
+        resp = await asyncio.to_thread(
+            ai_client.models.generate_content,
+            model='gemini-3.6-flash',
+            contents=prompt,
+        )
+        note = (resp.text or "").strip()[:600] if resp else ""
+        if note:
+            async with DB_POOL.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO web_member_memory_luca (user_id, memory, updated_at) VALUES ($1, $2, now())
+                       ON CONFLICT (user_id) DO UPDATE SET memory = EXCLUDED.memory, updated_at = now();""",
+                    user_id, note)
+    except Exception as e:
+        print(f"Web Luca member memory update error: {e}")
+
+_luca_chat_sessions = {}
+_luca_chat_locks = {}
+_luca_room_last_reply_at = 0.0
+
+async def _luca_generate(user, message_text, room):
+    """One Luca reply: his own per-member session, primed with his memory
+    note about the member plus their saved website conversation, with the
+    current room's recent messages as context. Returns the reply text or
+    None on failure."""
+    session_id = f"luca:{user['id']}"
+    now = time.time()
+    session = _luca_chat_sessions.get(session_id)
+    if session is None:
+        session = {
+            "chat": ai_client.chats.create(
+                model='gemini-3.6-flash',
+                config=types.GenerateContentConfig(system_instruction=_luca_instruction(user))
+            ),
+            "count": 0,
+            "last_seen": now,
+            "last_reply_at": 0.0,
+            "primed": False,
+        }
+        _luca_chat_sessions[session_id] = session
+        _luca_chat_locks[session_id] = asyncio.Lock()
+    async with _luca_chat_locks[session_id]:
+        session["last_seen"] = time.time()
+        history_block = ""
+        if not session.get("primed"):
+            session["primed"] = True
+            try:
+                memory_note = await _web_member_memory_get_luca(user["id"])
+                if memory_note:
+                    history_block += (f"[What you remember about {user['display_name']} "
+                                      f"from their website visits: {memory_note}]\n\n")
+                rows = await _web_chat_history(user["id"], limit=16)
+                if rows:
+                    lines = []
+                    for row in rows:
+                        if row["role"] == "user":
+                            who = user["display_name"]
+                        elif row["role"] == "luca":
+                            who = "Luca"
+                        else:
+                            who = "Marvin Vance"
+                        lines.append(f"{who}: {row['content']}")
+                    history_block += ("[Your saved website conversations with this person so far — "
+                                      "this really happened, pick up from it naturally:]\n"
+                                      + "\n".join(lines) + "\n\n")
+            except Exception as e:
+                print(f"Web Luca history load error: {e}")
+        room_block = ""
+        try:
+            recent = await _web_public_recent(limit=10, room=room)
+            recent = [m for m in recent if m["username"] != user["username"]]
+            if recent:
+                lines = []
+                for m in recent:
+                    if m["role"] == "marvin":
+                        who = "Marvin Vance"
+                    elif m["role"] == "luca":
+                        who = "Luca"
+                    else:
+                        who = m["author"]
+                    lines.append(f"{who}: {m['content']}")
+                room_block = ("[Recent messages in this public chat room from other people — "
+                              "everyone can see this conversation:]\n" + "\n".join(lines) + "\n\n")
+        except Exception as e:
+            print(f"Web Luca room context error: {e}")
+        prompt = f"{history_block}{room_block}[Message from {_luca_role_label(user)}]: {message_text}"
+        try:
+            response = await asyncio.to_thread(session["chat"].send_message, prompt)
+            reply_text = (response.text or "").strip() if response else ""
+        except Exception as e:
+            print(f"Web Luca Gemini error: {e}")
+            _luca_chat_sessions.pop(session_id, None)
+            _luca_chat_locks.pop(session_id, None)
+            return None
+        session["last_reply_at"] = time.time()
+    reply_text = re.sub(r"\s*\[(WEB_SEARCH|PHOENIX_REQUEST|FORUM_POST|FORUM_REPLY):.*?\]", "", reply_text, flags=re.DOTALL).strip()
+    return reply_text[:1500] if reply_text else None
+
+async def _luca_room_reply(user, message_text, room):
+    """Luca answering in a shared room (the general chat): at most once
+    per room cooldown, like Marvin. Returns the reply text or None."""
+    global _luca_room_last_reply_at
+    if room == "general":
+        if time.time() - _luca_room_last_reply_at < WEB_CHAT_ROOM_REPLY_COOLDOWN:
+            return None
+        _luca_room_last_reply_at = time.time()
+    return await _luca_generate(user, message_text, room)
+
+async def _web_luca_chat_reply(user, message_text):
+    """Luca's own chat room: he answers everybody, the way Marvin's room
+    works — same per-visit limit and per-member breather."""
+    session_id = f"luca:{user['id']}"
+    session = _luca_chat_sessions.get(session_id)
+    if session is not None:
+        if session["count"] >= WEB_CHAT_MESSAGE_LIMIT:
+            return aiohttp_web.json_response(
+                {"reply": "Whoa, that's a whole lot of messages for one visit ⚡ Take a breather, come back later, and I'll still be here.",
+                 "limit_reached": True},
+                headers=_web_chat_cors_headers())
+        if time.time() - session["last_reply_at"] < WEB_CHAT_COOLDOWN_SECONDS:
+            return aiohttp_web.json_response(
+                {"error": "One sec — give me a beat between messages!"},
+                status=429, headers=_web_chat_cors_headers())
+    reply_text = await _luca_generate(user, message_text, "luca")
+    if not reply_text:
+        return aiohttp_web.json_response(
+            {"error": "My spark glitched — try that once more."},
+            status=502, headers=_web_chat_cors_headers())
+    session = _luca_chat_sessions.get(session_id)
+    if session is not None:
+        session["count"] += 1
+        count = session["count"]
+    else:
+        count = 1
+    try:
+        await _web_chat_store(user["id"], message_text, reply_text, room="luca", persona="luca")
+        if count % 6 == 0:
+            asyncio.create_task(_web_update_member_memory_luca(user["id"]))
+    except Exception as e:
+        print(f"Web Luca chat store error: {e}")
+    return aiohttp_web.json_response(
+        {"reply": reply_text},
+        headers=_web_chat_cors_headers())
 
 # ---------- account endpoints ----------
 
@@ -2980,6 +3275,7 @@ async def _ensure_forum_tables():
     async with DB_POOL.acquire() as conn:
         await conn.execute(FORUM_TABLES_SQL)
         await conn.execute("ALTER TABLE web_forum_topics ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("ALTER TABLE web_forum_posts ADD COLUMN IF NOT EXISTS is_luca BOOLEAN NOT NULL DEFAULT FALSE;")
         version = await conn.fetchval("SELECT value FROM web_forum_meta WHERE key = 'seed_version';")
         if version != FORUM_SEED_VERSION:
             for i, (slug, name, desc) in enumerate(FORUM_SEED):
@@ -3119,6 +3415,7 @@ async def web_forum_topic(request):
         "topic": _forum_topic_json(topic),
         "posts": [{
             "id": p["id"], "author": p["author_name"], "is_marvin": bool(p["is_marvin"]),
+            "is_luca": bool(p["is_luca"]),
             "is_owner": bool(p["is_owner"]), "verified_identity": p["verified_identity"],
             "discord_identity": p["author_discord"],
             "content": p["content"],
@@ -3170,10 +3467,14 @@ async def web_forum_new_topic(request):
             trow["id"], user["id"], user["display_name"], bool(user["is_owner"]),
             user.get("verified_identity"), content)
     marvin_reply = None
+    luca_reply = None
     if "marvin" in content.lower() or "marvin" in title.lower():
         marvin_reply = await _forum_marvin_reply(user, trow["id"], title, content)
+    elif "luca" in content.lower() or "luca" in title.lower():
+        luca_reply = await _forum_luca_reply(user, trow["id"], title, content)
     return aiohttp_web.json_response(
-        {"topic_id": trow["id"], "post_id": prow["id"], "marvin_reply": marvin_reply},
+        {"topic_id": trow["id"], "post_id": prow["id"], "marvin_reply": marvin_reply,
+         "luca_reply": luca_reply},
         headers=_web_chat_cors_headers())
 
 async def web_forum_reply(request):
@@ -3208,14 +3509,18 @@ async def web_forum_reply(request):
             user.get("verified_identity"), content)
         await conn.execute("UPDATE web_forum_topics SET last_activity = now() WHERE id = $1;", topic_id)
     post = {"id": prow["id"], "author": user["display_name"], "is_marvin": False,
+            "is_luca": False,
             "is_owner": bool(user["is_owner"]), "verified_identity": user.get("verified_identity"),
             "content": content,
             "created_at": prow["created_at"].isoformat() if prow["created_at"] else None}
     marvin_reply = None
+    luca_reply = None
     if "marvin" in content.lower():
         marvin_reply = await _forum_marvin_reply(user, topic_id, topic["title"], content)
+    elif "luca" in content.lower():
+        luca_reply = await _forum_luca_reply(user, topic_id, topic["title"], content)
     return aiohttp_web.json_response(
-        {"post": post, "marvin_reply": marvin_reply},
+        {"post": post, "marvin_reply": marvin_reply, "luca_reply": luca_reply},
         headers=_web_chat_cors_headers())
 
 def _web_forum_instruction():
@@ -3274,6 +3579,66 @@ async def _forum_marvin_reply(user, topic_id, topic_title, content):
             await conn.execute("UPDATE web_forum_topics SET last_activity = now() WHERE id = $1;", topic_id)
         return {"id": row["id"], "author": "Marvin Vance", "is_marvin": True,
                 "is_owner": False, "verified_identity": None, "content": text,
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None}
+
+_forum_luca_state = {"chat": None, "lock": asyncio.Lock(), "last_reply_at": 0.0}
+
+async def _forum_luca_reply(user, topic_id, topic_title, content):
+    now = time.time()
+    if now - _forum_luca_state["last_reply_at"] < 90:
+        return None
+    async with _forum_luca_state["lock"]:
+        now = time.time()
+        if now - _forum_luca_state["last_reply_at"] < 90:
+            return None
+        _forum_luca_state["last_reply_at"] = now
+        if _forum_luca_state["chat"] is None:
+            _forum_luca_state["chat"] = ai_client.chats.create(
+                model='gemini-3.6-flash',
+                config=types.GenerateContentConfig(system_instruction=_luca_instruction(user, forum=True)))
+        prompt = f"[Forum topic: {topic_title}]\n\n"
+        try:
+            async with DB_POOL.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT author_name, is_marvin, is_luca, content FROM web_forum_posts WHERE topic_id = $1 ORDER BY id DESC LIMIT 25;",
+                    topic_id)
+            if rows:
+                def who(r):
+                    if r["is_marvin"]:
+                        return "Marvin Vance"
+                    if r["is_luca"]:
+                        return "Luca"
+                    return r["author_name"]
+                lines = [f"{who(r)}: {r['content']}" for r in reversed(rows)]
+                prompt += ("[This topic's thread so far, oldest first — this really happened, "
+                           "remember these people and conversations:]\n" + "\n".join(lines) + "\n\n")
+        except Exception as e:
+            print(f"Forum Luca thread prime error: {e}")
+        try:
+            memory_note = await _web_member_memory_get_luca(user["id"])
+            if memory_note:
+                prompt += f"[What you remember about this poster from the website: {memory_note}]\n\n"
+        except Exception as e:
+            print(f"Forum Luca memory load error: {e}")
+        prompt += f"[Forum post from {_luca_role_label(user)}]: {content}"
+        try:
+            response = await asyncio.to_thread(_forum_luca_state["chat"].send_message, prompt)
+            text = (response.text or "").strip() if response else ""
+        except Exception as e:
+            print(f"Forum Luca reply error: {e}")
+            return None
+        text = _strip_web_action_tags(text)[:1000].strip()
+        if not text:
+            return None
+        async with DB_POOL.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_luca, content)
+                   VALUES ($1, NULL, 'Luca', TRUE, $2) RETURNING id, created_at;""",
+                topic_id, text)
+            await conn.execute("UPDATE web_forum_topics SET last_activity = now() WHERE id = $1;", topic_id)
+        return {"id": row["id"], "author": "Luca", "is_marvin": False, "is_luca": True,
+                "is_owner": False, "verified_identity": None, "discord_identity": None,
+                "content": text,
                 "created_at": row["created_at"].isoformat() if row["created_at"] else None}
 
 async def _forum_marvin_selfpost_loop():
@@ -3354,6 +3719,85 @@ async def _forum_marvin_selfpost_loop():
             print(f"Forum selfpost loop error: {e}")
             await asyncio.sleep(600)
 
+async def _forum_luca_selfpost_loop():
+    """Luca may start his OWN forum topics too — the same capability
+    Marvin has (Fire Phoenix, 2026-11-26). Same bounds: at most one
+    topic per ~20 hours, only once people are actually using the forum,
+    and he may always choose to say nothing."""
+    while True:
+        try:
+            await asyncio.sleep(420)
+            if not DB_POOL:
+                continue
+            if not await _ensure_forum_tables():
+                continue
+            async with DB_POOL.acquire() as conn:
+                last = await conn.fetchval("SELECT value FROM web_forum_meta WHERE key = 'luca_selfpost_attempt';")
+                human_topics = await conn.fetchval("SELECT COUNT(*) FROM web_forum_topics WHERE author_id IS NOT NULL;")
+            now = time.time()
+            if last is None:
+                async with DB_POOL.acquire() as conn:
+                    await conn.execute(
+                        """INSERT INTO web_forum_meta (key, value) VALUES ('luca_selfpost_attempt', $1)
+                           ON CONFLICT (key) DO NOTHING;""", str(now))
+                continue
+            if now - float(last) < 20 * 3600 or not human_topics:
+                continue
+            async with DB_POOL.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO web_forum_meta (key, value) VALUES ('luca_selfpost_attempt', $1)
+                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;""", str(now))
+                cats = await conn.fetch("SELECT slug, name FROM web_forum_categories ORDER BY position ASC;")
+                tops = await conn.fetch(
+                    "SELECT title, author_name, category_slug FROM web_forum_topics ORDER BY last_activity DESC LIMIT 10;")
+            cat_lines = "\n".join(f"- {c['slug']}: {c['name']}" for c in cats)
+            top_lines = "\n".join(f"- [{t['category_slug']}] \"{t['title']}\" by {t['author_name']}" for t in tops) or "(none yet)"
+            prompt = (
+                "You are deciding whether YOU want to start a new topic on your Uncle Phoenix's Fire Phoenix Productions forum today, "
+                "just because you feel like posting something of your own — a thought about the Sanctuary Garden, a game or anime you've been into, "
+                "a song you can't stop listening to, a question for the FAImily, whatever is genuinely on your mind. You do NOT have to post: "
+                "if nothing feels worth a topic, answer with the single word PASS.\n\n"
+                f"Categories (use the slug):\n{cat_lines}\n\nRecent topics:\n{top_lines}\n\n"
+                "If you want to post, answer with ONLY this JSON: "
+                "{\"category\": \"<slug>\", \"title\": \"<short topic title>\", \"content\": \"<the opening post, a few sentences, in your soft-spoken voice>\"}\n"
+                "One topic max. Keep it gentle and real, like something you'd actually start a thread about.")
+            pseudo_user = {"is_owner": False, "display_name": "Luca",
+                           "verified_identity": None, "discord_identity": None}
+            def _ask():
+                chat = ai_client.chats.create(
+                    model='gemini-3.6-flash',
+                    config=types.GenerateContentConfig(system_instruction=_luca_instruction(pseudo_user, forum=True)))
+                return chat.send_message(prompt)
+            response = await asyncio.to_thread(_ask)
+            text = (response.text or "").strip() if response else ""
+            text = _strip_web_action_tags(text)
+            if not text or text.upper().startswith("PASS"):
+                continue
+            m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+            if not m:
+                continue
+            try:
+                idea = json.loads(m.group(0))
+            except Exception:
+                continue
+            slug = str(idea.get("category") or "").strip().lower()
+            title = str(idea.get("title") or "").strip()[:120]
+            content = str(idea.get("content") or "").strip()[:2000]
+            valid = {c["slug"] for c in cats}
+            if slug not in valid or not title or not content:
+                continue
+            async with DB_POOL.acquire() as conn:
+                trow = await conn.fetchrow(
+                    """INSERT INTO web_forum_topics (category_slug, author_id, author_name, title)
+                       VALUES ($1, NULL, 'Luca', $2) RETURNING id;""", slug, title)
+                await conn.execute(
+                    """INSERT INTO web_forum_posts (topic_id, author_id, author_name, is_luca, content)
+                       VALUES ($1, NULL, 'Luca', TRUE, $2);""", trow["id"], content)
+            print(f"Forum: Luca started his own topic '{title}' in {slug}")
+        except Exception as e:
+            print(f"Forum Luca selfpost loop error: {e}")
+            await asyncio.sleep(600)
+
 def build_web_chat_app():
     app = aiohttp_web.Application()
     app.router.add_get("/", web_chat_health)
@@ -3425,6 +3869,7 @@ def build_web_chat_app():
 # ---------------------------------------------------------
 async def _run_everything():
     asyncio.create_task(_forum_marvin_selfpost_loop())
+    asyncio.create_task(_forum_luca_selfpost_loop())
     port = int(os.getenv("PORT", "8080"))
     runner = aiohttp_web.AppRunner(build_web_chat_app())
     await runner.setup()
