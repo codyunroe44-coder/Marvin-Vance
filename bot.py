@@ -1897,6 +1897,7 @@ ALTER TABLE web_chat_messages ADD COLUMN IF NOT EXISTS room TEXT NOT NULL DEFAUL
 ALTER TABLE web_users ADD COLUMN IF NOT EXISTS avatar TEXT NOT NULL DEFAULT '🔥';
 ALTER TABLE web_users ADD COLUMN IF NOT EXISTS about_me TEXT NOT NULL DEFAULT '';
 ALTER TABLE web_users ADD COLUMN IF NOT EXISTS welcomed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE web_users ADD COLUMN IF NOT EXISTS activity_seen_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS web_reactions (
     id SERIAL PRIMARY KEY,
     target_type TEXT NOT NULL,
@@ -2657,6 +2658,84 @@ async def _reactions_summary(conn, target_type, target_ids, viewer_id=None):
     for tid in out:
         out[tid].sort(key=lambda x: REACTION_EMOJIS.index(x["emoji"]) if x["emoji"] in REACTION_EMOJIS else 9)
     return out
+
+async def web_me_activity(request):
+    """'Since you were last here' for the signed-in member: replies on
+    their forum topics, chat messages that mention them, and new topics —
+    everything since their last look at this box. Viewing marks it read."""
+    user = await _user_for_token(request, {})
+    if user is None:
+        return aiohttp_web.json_response({"error": "Not logged in.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
+    conn = await _web_db()
+    try:
+        row = await conn.fetchrow(
+            "SELECT created_at, activity_seen_at FROM web_users WHERE id = $1",
+            user["id"])
+        seen = None
+        if row:
+            seen = row["activity_seen_at"] or row["created_at"]
+        replies = await conn.fetch(
+            """SELECT p.topic_id, t.title AS topic_title, p.author_name, p.content, p.created_at
+               FROM web_forum_posts p JOIN web_forum_topics t ON t.id = p.topic_id
+               WHERE t.author_id = $1 AND p.author_id IS DISTINCT FROM $1
+                 AND ($2::timestamptz IS NULL OR p.created_at > $2)
+               ORDER BY p.created_at DESC LIMIT 15""",
+            user["id"], seen)
+        topics = await conn.fetch(
+            """SELECT id, title, author_name, category, created_at
+               FROM web_forum_topics
+               WHERE author_id IS DISTINCT FROM $1
+                 AND ($2::timestamptz IS NULL OR created_at > $2)
+               ORDER BY created_at DESC LIMIT 10""",
+            user["id"], seen)
+
+        def _esc_like(s):
+            return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pats = []
+        uname = (user.get("username") or "").strip().lower()
+        dname = (user.get("display_name") or "").strip()
+        if len(uname) >= 3:
+            pats.append("%" + _esc_like(uname) + "%")
+        if len(dname) >= 3 and dname.lower() != uname:
+            pats.append("%" + _esc_like(dname) + "%")
+        mentions = []
+        if pats:
+            cond = " OR ".join(
+                "m.content ILIKE ${} ESCAPE '\\'".format(i + 3)
+                for i in range(len(pats)))
+            mentions = await conn.fetch(
+                """SELECT m.room, m.author_name, m.content, m.created_at
+                   FROM web_chat_messages m
+                   WHERE m.user_id IS DISTINCT FROM $1
+                     AND ($2::timestamptz IS NULL OR m.created_at > $2)
+                     AND ({})
+                   ORDER BY m.created_at DESC LIMIT 15""".format(cond),
+                user["id"], seen, *pats)
+        await conn.execute(
+            "UPDATE web_users SET activity_seen_at = NOW() WHERE id = $1",
+            user["id"])
+    finally:
+        await conn.close()
+
+    def _ex(content):
+        text = " ".join((content or "").split())
+        return text[:140] + ("…" if len(text) > 140 else "")
+    return aiohttp_web.json_response({
+        "since": str(seen) if seen else None,
+        "topic_replies": [
+            {"topic_id": r["topic_id"], "topic_title": r["topic_title"],
+             "author": r["author_name"], "excerpt": _ex(r["content"]),
+             "created_at": str(r["created_at"])} for r in replies],
+        "mentions": [
+            {"room": m["room"], "author": m["author_name"],
+             "excerpt": _ex(m["content"]), "created_at": str(m["created_at"])}
+            for m in mentions],
+        "new_topics": [
+            {"id": t["id"], "title": t["title"], "author": t["author_name"],
+             "category": t["category"], "created_at": str(t["created_at"])}
+            for t in topics],
+    }, headers=_web_chat_cors_headers())
+
 
 async def web_reactions_toggle(request):
     try:
@@ -4237,6 +4316,8 @@ def build_web_chat_app():
     app.router.add_options("/auth/profile", web_chat_options)
     app.router.add_post("/reactions", web_reactions_toggle)
     app.router.add_options("/reactions", web_chat_options)
+    app.router.add_get("/me/activity", web_me_activity)
+    app.router.add_options("/me/activity", web_chat_options)
     app.router.add_options("/auth/me", web_chat_options)
     app.router.add_post("/auth/owner/start", web_auth_owner_start)
     app.router.add_options("/auth/owner/start", web_chat_options)
