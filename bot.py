@@ -2667,6 +2667,7 @@ async def web_me_activity(request):
     if user is None:
         return aiohttp_web.json_response({"error": "Not logged in.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
     conn = await _web_db()
+    _step = "row"
     try:
         row = await conn.fetchrow(
             "SELECT created_at, activity_seen_at FROM web_users WHERE id = $1",
@@ -2674,6 +2675,7 @@ async def web_me_activity(request):
         seen = None
         if row:
             seen = row["activity_seen_at"] or row["created_at"]
+        _step = "replies"
         replies = await conn.fetch(
             """SELECT p.topic_id, t.title AS topic_title, p.author_name, p.content, p.created_at
                FROM web_forum_posts p JOIN web_forum_topics t ON t.id = p.topic_id
