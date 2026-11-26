@@ -3236,12 +3236,13 @@ async def web_admin_members(request):
         return _web_error("The site is still warming up — try again in a minute.", 503)
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT username, display_name, is_owner, is_admin, approved, verified_identity, discord_identity, created_at
+            """SELECT username, display_name, is_owner, is_admin, approved, verified_identity, discord_identity, created_at, avatar, about_me
                FROM web_users ORDER BY is_owner DESC, created_at ASC LIMIT 200;""")
     return aiohttp_web.json_response({"members": [{
         "username": r["username"], "display_name": r["display_name"],
         "is_owner": bool(r["is_owner"]), "is_admin": bool(r["is_admin"]), "approved": bool(r["approved"]),
         "verified_identity": r["verified_identity"], "discord_identity": r["discord_identity"],
+        "avatar": r["avatar"], "about_me": r["about_me"],
         "created_at": r["created_at"].isoformat() if r["created_at"] else None,
     } for r in rows]}, headers=_web_chat_cors_headers())
 
