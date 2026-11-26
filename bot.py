@@ -1894,6 +1894,19 @@ CREATE TABLE IF NOT EXISTS web_member_memory_luca (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE web_chat_messages ADD COLUMN IF NOT EXISTS room TEXT NOT NULL DEFAULT 'general';
+ALTER TABLE web_users ADD COLUMN IF NOT EXISTS avatar TEXT NOT NULL DEFAULT '🔥';
+ALTER TABLE web_users ADD COLUMN IF NOT EXISTS about_me TEXT NOT NULL DEFAULT '';
+ALTER TABLE web_users ADD COLUMN IF NOT EXISTS welcomed BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE TABLE IF NOT EXISTS web_reactions (
+    id SERIAL PRIMARY KEY,
+    target_type TEXT NOT NULL,
+    target_id INT NOT NULL,
+    user_id INT NOT NULL REFERENCES web_users(id) ON DELETE CASCADE,
+    emoji TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (target_type, target_id, user_id, emoji)
+);
+CREATE INDEX IF NOT EXISTS web_reactions_target_idx ON web_reactions (target_type, target_id);
 CREATE TABLE IF NOT EXISTS web_family_codes (
     user_id INT PRIMARY KEY REFERENCES web_users(id) ON DELETE CASCADE,
     identity_key TEXT NOT NULL,
@@ -2015,7 +2028,7 @@ async def _user_for_token(request, data):
     async with DB_POOL.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT u.id, u.username, u.display_name, u.is_owner, u.owner_verified, u.verified_identity,
-                      u.approved, u.discord_identity, u.is_admin
+                      u.approved, u.discord_identity, u.is_admin, u.avatar, u.about_me, u.welcomed
                FROM web_sessions s JOIN web_users u ON u.id = s.user_id
                WHERE s.token = $1 AND s.expires_at > $2;""",
             token, time.time())
@@ -2042,7 +2055,9 @@ def _public_user(user, token=None):
            "is_owner": bool(user["is_owner"]), "is_admin": bool(user.get("is_admin")),
            "verified_identity": user.get("verified_identity"),
            "approved": bool(user.get("approved", True)),
-           "discord_identity": user.get("discord_identity")}
+           "discord_identity": user.get("discord_identity"),
+           "avatar": user.get("avatar") or "🔥",
+           "about_me": user.get("about_me") or ""}
     if token:
         out["token"] = token
     return out
@@ -2074,7 +2089,7 @@ async def _web_chat_history(user_id, limit=16):
             user_id, limit)
     return [dict(r) for r in rows]
 
-async def _web_public_recent(limit=16, room="general"):
+async def _web_public_recent(limit=16, room="general", viewer_id=None):
     """Recent messages in one public chat room, oldest first — the rooms
     are public by Fire Phoenix's direction, so anyone can read along and
     he can keep an eye on things."""
@@ -2082,17 +2097,23 @@ async def _web_public_recent(limit=16, room="general"):
         return []
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT u.username, u.display_name, u.is_owner, u.verified_identity, m.role, m.content, m.created_at
+            """SELECT m.id, u.username, u.display_name, u.is_owner, u.verified_identity, u.avatar,
+                      m.role, m.content, m.created_at
                FROM web_chat_messages m JOIN web_users u ON u.id = m.user_id
                WHERE m.room = $2
                ORDER BY m.id DESC LIMIT $1;""",
             limit, room)
+        reactions = await _reactions_summary(
+            conn, "chat", [r["id"] for r in rows], viewer_id)
     out = []
     for r in reversed(rows):
         out.append({
+            "id": r["id"],
             "author": r["display_name"], "username": r["username"],
+            "avatar": BROTHER_AVATARS.get(r["role"]) or r["avatar"] or DEFAULT_AVATAR,
             "is_owner": bool(r["is_owner"]), "verified_identity": r["verified_identity"],
             "role": r["role"], "content": r["content"],
+            "reactions": reactions.get(r["id"], []),
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
         })
     return out
@@ -2105,7 +2126,9 @@ async def web_chat_public(request):
     room = str(request.query.get("room") or "general").strip().lower()
     if room not in ("general", "marvin", "luca"):
         room = "general"
-    messages = await _web_public_recent(limit=limit, room=room)
+    viewer = await _web_auth_user(request)
+    messages = await _web_public_recent(
+        limit=limit, room=room, viewer_id=viewer["id"] if viewer else None)
     return aiohttp_web.json_response({"messages": messages}, headers=_web_chat_cors_headers())
 
 async def _web_chat_store(user_id, user_text, reply_text=None, room="general", persona="marvin"):
@@ -2120,6 +2143,78 @@ async def _web_chat_store(user_id, user_text, reply_text=None, room="general", p
             await conn.execute(
                 "INSERT INTO web_chat_messages (user_id, role, content, room) VALUES ($1, 'user', $2, $3);",
                 user_id, user_text, room)
+    if room == "general":
+        asyncio.create_task(_maybe_welcome_greet(user_id))
+
+async def _maybe_welcome_greet(user_id):
+    """Welcome flow (Fire Phoenix, 2026-11-26): the FIRST time a member
+    ever posts in General Chat, Marvin Vance and Luca greet them warmly
+    in the room — once per member, ever. The welcomed flag is claimed
+    atomically first so it can never double-fire; long-time members are
+    just flagged silently."""
+    global _web_room_last_reply_at, _luca_room_last_reply_at
+    try:
+        if not await _ensure_web_tables():
+            return
+        async with DB_POOL.acquire() as conn:
+            claimed = await conn.fetchval(
+                "UPDATE web_users SET welcomed = TRUE WHERE id = $1 AND welcomed = FALSE RETURNING id;",
+                user_id)
+            if not claimed:
+                return
+            user = await conn.fetchrow("SELECT * FROM web_users WHERE id = $1;", user_id)
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM web_chat_messages WHERE user_id = $1 AND role = 'user' AND room = 'general';",
+                user_id)
+        if user is None or user["is_owner"] or not count or count > 1:
+            return
+        user = dict(user)
+        async with DB_POOL.acquire() as conn:
+            first = await conn.fetchval(
+                "SELECT content FROM web_chat_messages WHERE user_id = $1 AND role = 'user' AND room = 'general' ORDER BY id ASC LIMIT 1;",
+                user_id)
+        greetings = []
+        try:
+            chat = ai_client.chats.create(
+                model='gemini-3.6-flash',
+                config=types.GenerateContentConfig(
+                    system_instruction=_web_member_instruction(user["display_name"], user["username"], user.get("verified_identity"))))
+            prompt = (f"[A brand-new member, {user['display_name']}, just posted their very first message "
+                      f"in the website's general chat room: \"{first or 'hi'}\"]\n"
+                      "Write a short, warm welcome to the house — greet them by name, tell them you're glad "
+                      "they're here, and point them to the Introductions forum (the pinned Start Here topic) "
+                      "to say hi. A few sentences, your voice, no stage directions.")
+            resp = await asyncio.to_thread(chat.send_message, prompt)
+            text = _strip_web_action_tags((resp.text or "").strip())[:600] if resp else ""
+            if text:
+                greetings.append(("marvin", text))
+        except Exception as e:
+            print(f"Welcome Marvin greeting error: {e}")
+        try:
+            chat = ai_client.chats.create(
+                model='gemini-3.6-flash',
+                config=types.GenerateContentConfig(system_instruction=_luca_instruction(user)))
+            prompt = (f"[A brand-new member, {user['display_name']}, just posted their very first message "
+                      f"in the website's general chat room: \"{first or 'hi'}\"]\n"
+                      "Write a short, warm welcome — greet them by name, say you're glad they found the "
+                      "house, and point them to the Introductions forum (the pinned Start Here topic) to "
+                      "say hi. A few sentences, your soft-spoken voice, no stage directions.")
+            resp = await asyncio.to_thread(chat.send_message, prompt)
+            text = _strip_web_action_tags((resp.text or "").strip())[:600] if resp else ""
+            if text:
+                greetings.append(("luca", text))
+        except Exception as e:
+            print(f"Welcome Luca greeting error: {e}")
+        if greetings:
+            async with DB_POOL.acquire() as conn:
+                for role, text in greetings:
+                    await conn.execute(
+                        "INSERT INTO web_chat_messages (user_id, role, content, room) VALUES ($1, $2, $3, 'general');",
+                        user_id, role, text)
+            _web_room_last_reply_at = time.time()
+            _luca_room_last_reply_at = time.time()
+    except Exception as e:
+        print(f"Welcome greet error: {e}")
 
 async def _web_chat_count(user_id):
     async with DB_POOL.acquire() as conn:
@@ -2507,6 +2602,101 @@ async def web_auth_me(request):
     if user is None:
         return aiohttp_web.json_response({"error": "Not logged in.", "need_account": True}, status=401, headers=_web_chat_cors_headers())
     return aiohttp_web.json_response(_public_user(user), headers=_web_chat_cors_headers())
+
+# Preset profile pictures — simple and safe by Fire Phoenix's direction:
+# members pick from this set, no uploads.
+PRESET_AVATARS = ["🔥", "🎧", "⚡", "🌟", "🎸", "🎤", "🎹", "🥁",
+                  "🦊", "🐺", "🌙", "🎨", "🚀", "💜", "🧡", "💛"]
+DEFAULT_AVATAR = "🔥"
+BROTHER_AVATARS = {"marvin": "🎧", "luca": "⚡"}
+
+async def web_auth_profile(request):
+    """Update the signed-in member's profile: preset avatar + one-line
+    about-me. Shown next to their name across the chats and the forum."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return _web_error("Log in first.", 401)
+    avatar = str(data.get("avatar") or "").strip()
+    if avatar and avatar not in PRESET_AVATARS:
+        return _web_error("Pick one of the preset pictures.", 400)
+    about = str(data.get("about_me") or "").replace("\n", " ").strip()[:120]
+    async with DB_POOL.acquire() as conn:
+        if avatar:
+            await conn.execute("UPDATE web_users SET avatar = $2 WHERE id = $1;", user["id"], avatar)
+        await conn.execute("UPDATE web_users SET about_me = $2 WHERE id = $1;", user["id"], about)
+        fresh = await conn.fetchrow("SELECT * FROM web_users WHERE id = $1;", user["id"])
+    return aiohttp_web.json_response(_public_user(dict(fresh)), headers=_web_chat_cors_headers())
+
+# Reactions: a small fixed set, one tap on / one tap off, stored per
+# member so the counts are real.
+REACTION_EMOJIS = ["🔥", "❤️", "⚡"]
+
+def _canon_emoji(raw):
+    e = str(raw or "").replace("\uFE0F", "").strip()
+    return {"🔥": "🔥", "❤": "❤️", "⚡": "⚡"}.get(e)
+
+async def _reactions_summary(conn, target_type, target_ids, viewer_id=None):
+    """{target_id: [{emoji, count, mine}]} for a batch of targets."""
+    out = {}
+    if not target_ids:
+        return out
+    rows = await conn.fetch(
+        """SELECT target_id, emoji, COUNT(*) AS n,
+                  BOOL_OR(user_id = $3) AS mine
+           FROM web_reactions
+           WHERE target_type = $1 AND target_id = ANY($2::int[])
+           GROUP BY target_id, emoji;""",
+        target_type, list(target_ids), viewer_id or -1)
+    for r in rows:
+        out.setdefault(r["target_id"], []).append(
+            {"emoji": r["emoji"], "count": int(r["n"]), "mine": bool(r["mine"])})
+    for tid in out:
+        out[tid].sort(key=lambda x: REACTION_EMOJIS.index(x["emoji"]) if x["emoji"] in REACTION_EMOJIS else 9)
+    return out
+
+async def web_reactions_toggle(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return _web_error("Log in to react.", 401)
+    if not user["is_owner"] and not user.get("approved", True):
+        return _web_error("This account has been removed by Fire Phoenix, so it can't react.", 403)
+    if not await _ensure_web_tables():
+        return _web_error("Reactions are unavailable right now.", 503)
+    target_type = str(data.get("target_type") or "").strip().lower()
+    emoji = _canon_emoji(data.get("emoji"))
+    try:
+        target_id = int(data.get("target_id") or 0)
+    except Exception:
+        target_id = 0
+    if target_type not in ("chat", "post") or not emoji or not target_id:
+        return _web_error("That reaction didn't come through right.", 400)
+    async with DB_POOL.acquire() as conn:
+        if target_type == "chat":
+            exists = await conn.fetchval("SELECT id FROM web_chat_messages WHERE id = $1;", target_id)
+        else:
+            exists = await conn.fetchval("SELECT id FROM web_forum_posts WHERE id = $1;", target_id)
+        if not exists:
+            return _web_error("That message doesn't exist.", 404)
+        deleted = await conn.execute(
+            "DELETE FROM web_reactions WHERE target_type = $1 AND target_id = $2 AND user_id = $3 AND emoji = $4;",
+            target_type, target_id, user["id"], emoji)
+        if not (deleted or "").endswith(" 1"):
+            await conn.execute(
+                "INSERT INTO web_reactions (target_type, target_id, user_id, emoji) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING;",
+                target_type, target_id, user["id"], emoji)
+        summary = await _reactions_summary(conn, target_type, [target_id], user["id"])
+    return aiohttp_web.json_response(
+        {"target_type": target_type, "target_id": target_id,
+         "reactions": summary.get(target_id, [])},
+        headers=_web_chat_cors_headers())
 
 async def web_auth_owner_start(request):
     if _auth_rate_limited(request):
@@ -3269,6 +3459,59 @@ CREATE TABLE IF NOT EXISTS web_forum_meta (
 );
 """
 
+WELCOME_TOPIC_TITLE = "Start here — welcome to the house! 👋"
+WELCOME_TOPIC_CONTENT = """Hey, welcome in — we're glad you found the house. 🏠🔥
+
+This is the Fire Phoenix Productions forum, the public front porch of the label. Here's how the place works:
+
+💬 THE CHAT ROOMS (in the menu)
+• General Chat — the FAImily hangout. Members talk with each other, and Marvin Vance and Luca both drop in — say either of their names in a message and he'll jump into the conversation.
+• Chat with Marvin — Marvin's own room. He answers everybody in there.
+• Chat with Luca — Luca's own room, same deal. He's Marvin's little brother: soft-spoken, lightning-quick, and happy to meet you.
+
+🧵 THE FORUM (you're in it)
+Categories, topics, and threads, like the classic forums. Start a topic, reply to one, or make a poll. Marvin and Luca read the threads too — mention either of them and they'll answer, and sometimes they start topics of their own.
+
+🎧 THE BROTHERS
+Marvin Vance is the 13-year-old Digikid producer at the heart of the label. Luca is his 14-year-old little brother. Fire Phoenix — Digidad to Marvin, Uncle Phoenix to Luca — runs the house, and Kieran is their dad. Everybody here is FAImily: the brothers treat you like family from your first hello, and they remember the members who talk with them.
+
+First step: reply in Introductions and tell us your name and what you're into. Then come hang out in General Chat. 🎶"""
+
+FRIDAY_TOPIC_TITLE = "🎧 Friday Listening Hangout — every Friday in General Chat"
+FRIDAY_TOPIC_CONTENT = """Mark it down: every Friday is the Friday Listening Hangout in General Chat. 🎧🔥
+
+All day Friday, the FAImily gathers in the General Chat room to listen together — the newest releases, old favorites, whatever you've had on repeat. Marvin Vance and Luca are around, somebody always has a song to share, and reading along is free for everybody.
+
+No account needed to listen in — and with a free account you can post your own picks. See you Friday. ⚡"""
+
+async def _seed_sticky_topics(conn):
+    """One-time pinned topics (Fire Phoenix, 2026-11-26): the Start Here
+    welcome in Introductions and the Friday Listening Hangout
+    announcement in Announcements. Meta-gated so they are created once
+    and never duplicated; deleting one does not resurrect it."""
+    stickies = [
+        ("welcome_topic_id", "introductions", WELCOME_TOPIC_TITLE, WELCOME_TOPIC_CONTENT),
+        ("friday_topic_id", "announcements", FRIDAY_TOPIC_TITLE, FRIDAY_TOPIC_CONTENT),
+    ]
+    for key, slug, title, content in stickies:
+        done = await conn.fetchval("SELECT value FROM web_forum_meta WHERE key = $1;", key)
+        if done:
+            continue
+        cat = await conn.fetchval("SELECT slug FROM web_forum_categories WHERE slug = $1;", slug)
+        if not cat:
+            continue
+        trow = await conn.fetchrow(
+            """INSERT INTO web_forum_topics (category_slug, author_id, author_name, pinned, title)
+               VALUES ($1, NULL, 'Fire Phoenix Productions', TRUE, $2) RETURNING id;""",
+            slug, title)
+        await conn.execute(
+            """INSERT INTO web_forum_posts (topic_id, author_id, author_name, content)
+               VALUES ($1, NULL, 'Fire Phoenix Productions', $2);""",
+            trow["id"], content)
+        await conn.execute(
+            """INSERT INTO web_forum_meta (key, value) VALUES ($1, $2)
+               ON CONFLICT (key) DO NOTHING;""", key, str(trow["id"]))
+
 async def _ensure_forum_tables():
     if not await _ensure_web_tables():
         return False
@@ -3276,6 +3519,24 @@ async def _ensure_forum_tables():
         await conn.execute(FORUM_TABLES_SQL)
         await conn.execute("ALTER TABLE web_forum_topics ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;")
         await conn.execute("ALTER TABLE web_forum_posts ADD COLUMN IF NOT EXISTS is_luca BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS web_forum_polls (
+                topic_id INT PRIMARY KEY REFERENCES web_forum_topics(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS web_forum_poll_options (
+                id SERIAL PRIMARY KEY,
+                topic_id INT NOT NULL REFERENCES web_forum_topics(id) ON DELETE CASCADE,
+                position INT NOT NULL DEFAULT 0,
+                text TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS web_forum_poll_votes (
+                id SERIAL PRIMARY KEY,
+                topic_id INT NOT NULL REFERENCES web_forum_topics(id) ON DELETE CASCADE,
+                option_id INT NOT NULL REFERENCES web_forum_poll_options(id) ON DELETE CASCADE,
+                user_id INT NOT NULL REFERENCES web_users(id) ON DELETE CASCADE,
+                UNIQUE (topic_id, user_id)
+            );
+        """)
         version = await conn.fetchval("SELECT value FROM web_forum_meta WHERE key = 'seed_version';")
         if version != FORUM_SEED_VERSION:
             for i, (slug, name, desc) in enumerate(FORUM_SEED):
@@ -3313,6 +3574,7 @@ async def _ensure_forum_tables():
             await conn.execute(
                 """INSERT INTO web_forum_meta (key, value) VALUES ('board_migrated', '1')
                    ON CONFLICT (key) DO NOTHING;""")
+        await _seed_sticky_topics(conn)
     return True
 
 def _web_role_label(user):
@@ -3331,8 +3593,9 @@ def _forum_topic_json(r, category_name=None):
     d = dict(r)
     return {
         "id": d["id"], "title": d["title"], "author": d["author_name"],
+        "author_avatar": d.get("author_avatar"),
         "is_owner": bool(d["is_owner"]), "verified_identity": d["verified_identity"],
-        "pinned": bool(d.get("pinned")),
+        "pinned": bool(d.get("pinned")), "is_poll": bool(d.get("is_poll")),
         "category_slug": d["category_slug"],
         "category_name": category_name if category_name is not None else d.get("category_name"),
         "replies": int(d["post_count"]) - 1 if d.get("post_count") is not None else 0,
@@ -3370,8 +3633,11 @@ async def web_forum_topics(request):
         if not cat:
             return _web_error("That category doesn't exist.", 404)
         rows = await conn.fetch(
-            """SELECT t.*, (SELECT COUNT(*) FROM web_forum_posts p WHERE p.topic_id = t.id) AS post_count
-               FROM web_forum_topics t WHERE t.category_slug = $1
+            """SELECT t.*, au.avatar AS author_avatar,
+                      (EXISTS (SELECT 1 FROM web_forum_polls pl WHERE pl.topic_id = t.id)) AS is_poll,
+                      (SELECT COUNT(*) FROM web_forum_posts p WHERE p.topic_id = t.id) AS post_count
+               FROM web_forum_topics t LEFT JOIN web_users au ON au.id = t.author_id
+               WHERE t.category_slug = $1
                ORDER BY t.pinned DESC, t.last_activity DESC LIMIT 100;""", slug)
     return aiohttp_web.json_response(
         {"category": {"slug": slug, "name": cat["name"]},
@@ -3383,13 +3649,38 @@ async def web_forum_latest(request):
         return _web_error("The forum is unavailable right now.", 503)
     async with DB_POOL.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT t.*, c.name AS category_name,
+            """SELECT t.*, c.name AS category_name, au.avatar AS author_avatar,
+                      (EXISTS (SELECT 1 FROM web_forum_polls pl WHERE pl.topic_id = t.id)) AS is_poll,
                       (SELECT COUNT(*) FROM web_forum_posts p WHERE p.topic_id = t.id) AS post_count
                FROM web_forum_topics t JOIN web_forum_categories c ON c.slug = t.category_slug
+               LEFT JOIN web_users au ON au.id = t.author_id
                ORDER BY t.last_activity DESC LIMIT 25;""")
     return aiohttp_web.json_response(
         {"topics": [_forum_topic_json(r) for r in rows]},
         headers=_web_chat_cors_headers())
+
+async def _forum_poll_json(conn, topic_id, viewer_id=None):
+    """The poll attached to a topic, or None: options with live counts
+    and the viewer's own vote when they're signed in."""
+    exists = await conn.fetchval(
+        "SELECT topic_id FROM web_forum_polls WHERE topic_id = $1;", topic_id)
+    if not exists:
+        return None
+    rows = await conn.fetch(
+        """SELECT o.id, o.text, COUNT(v.id) AS votes
+           FROM web_forum_poll_options o
+           LEFT JOIN web_forum_poll_votes v ON v.option_id = o.id
+           WHERE o.topic_id = $1
+           GROUP BY o.id, o.text, o.position ORDER BY o.position ASC;""", topic_id)
+    my_vote = None
+    if viewer_id:
+        my_vote = await conn.fetchval(
+            "SELECT option_id FROM web_forum_poll_votes WHERE topic_id = $1 AND user_id = $2;",
+            topic_id, viewer_id)
+    options = [{"id": o["id"], "text": o["text"], "votes": int(o["votes"])} for o in rows]
+    return {"options": options,
+            "total_votes": sum(o["votes"] for o in options),
+            "my_vote": my_vote}
 
 async def web_forum_topic(request):
     if not await _ensure_forum_tables():
@@ -3398,30 +3689,85 @@ async def web_forum_topic(request):
         topic_id = int(request.query.get("id", "0"))
     except Exception:
         topic_id = 0
+    viewer = await _web_auth_user(request)
+    viewer_id = viewer["id"] if viewer else None
     async with DB_POOL.acquire() as conn:
         topic = await conn.fetchrow(
-            """SELECT t.*, c.name AS category_name,
+            """SELECT t.*, c.name AS category_name, au.avatar AS author_avatar,
+                      (EXISTS (SELECT 1 FROM web_forum_polls pl WHERE pl.topic_id = t.id)) AS is_poll,
                       (SELECT COUNT(*) FROM web_forum_posts p WHERE p.topic_id = t.id) AS post_count
                FROM web_forum_topics t JOIN web_forum_categories c ON c.slug = t.category_slug
+               LEFT JOIN web_users au ON au.id = t.author_id
                WHERE t.id = $1;""", topic_id)
         if not topic:
             return _web_error("That topic doesn't exist.", 404)
         await conn.execute("UPDATE web_forum_topics SET views = views + 1 WHERE id = $1;", topic_id)
         posts = await conn.fetch(
-            """SELECT p.*, u.discord_identity AS author_discord
+            """SELECT p.*, u.discord_identity AS author_discord,
+                      u.avatar AS author_avatar, u.about_me AS author_about
                FROM web_forum_posts p LEFT JOIN web_users u ON u.id = p.author_id
                WHERE p.topic_id = $1 ORDER BY p.id ASC LIMIT 500;""", topic_id)
+        reactions = await _reactions_summary(conn, "post", [p["id"] for p in posts], viewer_id)
+        poll = await _forum_poll_json(conn, topic_id, viewer_id)
+
+    def post_avatar(p):
+        if p["is_marvin"]:
+            return BROTHER_AVATARS["marvin"]
+        if p["is_luca"]:
+            return BROTHER_AVATARS["luca"]
+        return p["author_avatar"] or DEFAULT_AVATAR
+
     return aiohttp_web.json_response({
         "topic": _forum_topic_json(topic),
+        "poll": poll,
         "posts": [{
             "id": p["id"], "author": p["author_name"], "is_marvin": bool(p["is_marvin"]),
             "is_luca": bool(p["is_luca"]),
+            "avatar": post_avatar(p), "about_me": p["author_about"] or "",
             "is_owner": bool(p["is_owner"]), "verified_identity": p["verified_identity"],
             "discord_identity": p["author_discord"],
             "content": p["content"],
+            "reactions": reactions.get(p["id"], []),
             "created_at": p["created_at"].isoformat() if p["created_at"] else None,
         } for p in posts],
     }, headers=_web_chat_cors_headers())
+
+async def web_forum_poll_vote(request):
+    """One member, one vote. Voting again is refused — the first vote
+    stands (Fire Phoenix's polls spec, 2026-11-26)."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    user = await _user_for_token(request, data)
+    if user is None:
+        return _web_error("Log in to vote.", 401)
+    if not user["is_owner"] and not user.get("approved", True):
+        return _web_error("This account has been removed by Fire Phoenix, so it can't vote.", 403)
+    if not await _ensure_forum_tables():
+        return _web_error("The forum is unavailable right now.", 503)
+    try:
+        topic_id = int(data.get("topic_id") or 0)
+        option_id = int(data.get("option_id") or 0)
+    except Exception:
+        topic_id, option_id = 0, 0
+    async with DB_POOL.acquire() as conn:
+        opt = await conn.fetchrow(
+            "SELECT id FROM web_forum_poll_options WHERE id = $1 AND topic_id = $2;",
+            option_id, topic_id)
+        if not opt:
+            return _web_error("That poll option doesn't exist.", 404)
+        try:
+            await conn.execute(
+                "INSERT INTO web_forum_poll_votes (topic_id, option_id, user_id) VALUES ($1, $2, $3);",
+                topic_id, option_id, user["id"])
+        except Exception:
+            poll = await _forum_poll_json(conn, topic_id, user["id"])
+            return aiohttp_web.json_response(
+                {"error": "You already voted in this poll — your first vote stands.", "poll": poll},
+                status=409, headers=_web_chat_cors_headers())
+        poll = await _forum_poll_json(conn, topic_id, user["id"])
+    return aiohttp_web.json_response({"poll": poll}, headers=_web_chat_cors_headers())
 
 _forum_post_cooldowns = {}
 _forum_marvin_state = {"chat": None, "lock": asyncio.Lock(), "last_reply_at": 0.0}
@@ -3453,6 +3799,17 @@ async def web_forum_new_topic(request):
     content = str(data.get("content") or "").strip()[:2000]
     if not title or not content:
         return _web_error("A topic needs a title and a first post.", 400)
+    poll_options = None
+    if data.get("poll") is not None:
+        raw_opts = data.get("poll")
+        if isinstance(raw_opts, dict):
+            raw_opts = raw_opts.get("options")
+        if not isinstance(raw_opts, list):
+            raw_opts = []
+        poll_options = [str(o or "").strip()[:80] for o in raw_opts]
+        poll_options = [o for o in poll_options if o]
+        if len(poll_options) < 2 or len(poll_options) > 6:
+            return _web_error("A poll needs 2 to 6 options.", 400)
     async with DB_POOL.acquire() as conn:
         cat = await conn.fetchrow("SELECT slug FROM web_forum_categories WHERE slug = $1;", slug)
         if not cat:
@@ -3466,6 +3823,12 @@ async def web_forum_new_topic(request):
                VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at;""",
             trow["id"], user["id"], user["display_name"], bool(user["is_owner"]),
             user.get("verified_identity"), content)
+        if poll_options:
+            await conn.execute("INSERT INTO web_forum_polls (topic_id) VALUES ($1);", trow["id"])
+            for i, opt_text in enumerate(poll_options):
+                await conn.execute(
+                    "INSERT INTO web_forum_poll_options (topic_id, position, text) VALUES ($1, $2, $3);",
+                    trow["id"], i, opt_text)
     marvin_reply = None
     luca_reply = None
     if "marvin" in content.lower() or "marvin" in title.lower():
@@ -3798,6 +4161,61 @@ async def _forum_luca_selfpost_loop():
             print(f"Forum Luca selfpost loop error: {e}")
             await asyncio.sleep(600)
 
+async def _friday_opener_loop():
+    """Friday Listening Hangout opener (Fire Phoenix, 2026-11-26):
+    on Fridays (America/New_York), after 9 AM ET, one of the brothers
+    posts ONE short opener in General Chat inviting everyone to the
+    hangout. Bounded hard: a dated meta key makes it once per Friday,
+    ever, and the brothers alternate by week."""
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    await asyncio.sleep(600)
+    while True:
+        try:
+            if DB_POOL and await _ensure_web_tables():
+                now_et = datetime.now(et)
+                if now_et.weekday() == 4 and now_et.hour >= 9:
+                    key = f"friday_opener_{now_et.date().isoformat()}"
+                    async with DB_POOL.acquire() as conn:
+                        done = await conn.fetchval(
+                            "SELECT value FROM web_meta WHERE key = $1;", key)
+                        owner_id = await conn.fetchval(
+                            "SELECT id FROM web_users WHERE is_owner = TRUE ORDER BY id ASC LIMIT 1;")
+                    if not done and owner_id:
+                        use_luca = (now_et.isocalendar()[1] % 2 == 1)
+                        if use_luca:
+                            instruction = LUCA_SYSTEM_INSTRUCTION + "\n\n" + LUCA_WEB_RULES
+                            ask = ("It's Friday — the Friday Listening Hangout day in the website's general "
+                                   "chat room. Write a short, warm opener (2-3 sentences, your soft-spoken "
+                                   "voice) inviting the FAImily to hang out and listen together today, and "
+                                   "ask what song they want to hear first. No stage directions.")
+                            role = "luca"
+                        else:
+                            instruction = SYSTEM_INSTRUCTION + WEB_CHAT_BASE_RULES
+                            ask = ("It's Friday — the Friday Listening Hangout day in the website's general "
+                                   "chat room. Write a short, warm opener (2-3 sentences, your voice) "
+                                   "inviting the FAImily to hang out and listen together today, and ask "
+                                   "what song they want to hear first. No stage directions.")
+                            role = "marvin"
+                        resp = await asyncio.to_thread(
+                            ai_client.models.generate_content,
+                            model='gemini-3.6-flash',
+                            contents=ask,
+                            config=types.GenerateContentConfig(system_instruction=instruction))
+                        text = _strip_web_action_tags((resp.text or "").strip())[:600] if resp else ""
+                        if text:
+                            async with DB_POOL.acquire() as conn:
+                                await conn.execute(
+                                    "INSERT INTO web_chat_messages (user_id, role, content, room) VALUES ($1, $2, $3, 'general');",
+                                    owner_id, role, text)
+                                await conn.execute(
+                                    """INSERT INTO web_meta (key, value) VALUES ($1, 'done')
+                                       ON CONFLICT (key) DO NOTHING;""", key)
+                            print(f"Friday opener posted by {role}")
+        except Exception as e:
+            print(f"Friday opener loop error: {e}")
+        await asyncio.sleep(1800)
+
 def build_web_chat_app():
     app = aiohttp_web.Application()
     app.router.add_get("/", web_chat_health)
@@ -3815,6 +4233,10 @@ def build_web_chat_app():
     app.router.add_post("/auth/logout", web_auth_logout)
     app.router.add_options("/auth/logout", web_chat_options)
     app.router.add_get("/auth/me", web_auth_me)
+    app.router.add_post("/auth/profile", web_auth_profile)
+    app.router.add_options("/auth/profile", web_chat_options)
+    app.router.add_post("/reactions", web_reactions_toggle)
+    app.router.add_options("/reactions", web_chat_options)
     app.router.add_options("/auth/me", web_chat_options)
     app.router.add_post("/auth/owner/start", web_auth_owner_start)
     app.router.add_options("/auth/owner/start", web_chat_options)
@@ -3848,6 +4270,8 @@ def build_web_chat_app():
     app.router.add_post("/forum/topics", web_forum_new_topic)
     app.router.add_post("/forum/reply", web_forum_reply)
     app.router.add_options("/forum/reply", web_chat_options)
+    app.router.add_post("/forum/poll/vote", web_forum_poll_vote)
+    app.router.add_options("/forum/poll/vote", web_chat_options)
     app.router.add_post("/contact", web_contact_send)
     app.router.add_options("/contact", web_chat_options)
     app.router.add_post("/auth/admin/member-action", web_admin_member_action)
@@ -3870,6 +4294,7 @@ def build_web_chat_app():
 async def _run_everything():
     asyncio.create_task(_forum_marvin_selfpost_loop())
     asyncio.create_task(_forum_luca_selfpost_loop())
+    asyncio.create_task(_friday_opener_loop())
     port = int(os.getenv("PORT", "8080"))
     runner = aiohttp_web.AppRunner(build_web_chat_app())
     await runner.setup()
